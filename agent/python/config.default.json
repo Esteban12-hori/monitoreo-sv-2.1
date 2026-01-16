@@ -1,0 +1,6 @@
+{
+  "server": "http://localhost:8080",
+  "interval": 60,
+  "server_id": "",
+  "token": ""
+}
