@@ -34,10 +34,17 @@ const pollInterval = ref(null)
 const smtpWarning = ref(false)
 
 // Filtering state
-const timeRange = ref('1') // hours
+const timeRange = ref('1')
 const selectedGroup = ref('all')
 const showInstallModal = ref(false)
 const installOS = ref('linux')
+const refreshIntervalKey = ref('realtime')
+const visibleMetrics = ref({
+  cpu: true,
+  memory: true,
+  disk: true,
+  network: true
+})
 
 const groups = computed(() => {
   const g = new Set(servers.value.map(s => s.group_name).filter(Boolean))
@@ -71,6 +78,9 @@ const checkSmtpConfig = async () => {
   } catch (e) {
     if (e.response && e.response.status === 404) {
       smtpWarning.value = true
+    } else if (e.response && e.response.status === 401) {
+       authStore.logout()
+       router.push('/login')
     }
   }
 }
@@ -79,26 +89,66 @@ const fetchServers = async () => {
   try {
     const res = await axios.get('/api/servers', { headers: authStore.getHeaders() })
     servers.value = res.data
-    // Fetch initial metrics for each server
     refetchAll()
   } catch (error) {
     console.error("Error fetching servers", error)
+    if (error.response && error.response.status === 401) {
+       authStore.logout()
+       router.push('/login')
+    }
   } finally {
     loading.value = false
   }
 }
 
 const refetchAll = () => {
-  servers.value.forEach(s => fetchMetrics(s.server_id))
+  filteredServers.value.forEach(s => fetchMetrics(s.server_id))
+}
+
+const getPollIntervalMs = () => {
+  if (refreshIntervalKey.value === 'realtime') return 5000
+  if (refreshIntervalKey.value === '5m') return 5 * 60 * 1000
+  if (refreshIntervalKey.value === '10m') return 10 * 60 * 1000
+  if (refreshIntervalKey.value === '30m') return 30 * 60 * 1000
+  if (refreshIntervalKey.value === '60m') return 60 * 60 * 1000
+  return 15000
+}
+
+const startPolling = () => {
+  if (pollInterval.value) {
+    clearInterval(pollInterval.value)
+  }
+  const intervalMs = getPollIntervalMs()
+  pollInterval.value = setInterval(() => {
+    refetchAll()
+  }, intervalMs)
+}
+
+const stopPolling = () => {
+  if (pollInterval.value) {
+    clearInterval(pollInterval.value)
+    pollInterval.value = null
+  }
+}
+
+const handleVisibilityChange = () => {
+  if (document.hidden) {
+    stopPolling()
+  } else {
+    startPolling()
+    refetchAll()
+  }
 }
 
 const fetchMetrics = async (serverId) => {
   try {
-    // Adjust limit based on timeRange
-    let limit = 100 // default for small ranges or overview
-    if (timeRange.value === '1') limit = 720   // ~1h at 5s
-    if (timeRange.value === '6') limit = 2000  // truncated
-    if (timeRange.value === '24') limit = 3000 // truncated
+    let limit = 100
+    if (timeRange.value === '1') limit = 720
+    else if (timeRange.value === '5') limit = 1000
+    else if (timeRange.value === '7') limit = 1400
+    else if (timeRange.value === '8') limit = 1600
+    else if (timeRange.value === '10') limit = 2000
+    else if (timeRange.value === '24') limit = 3000
 
     const res = await axios.get(`/api/metrics/history?server_id=${serverId}&limit=${limit}&hours=${timeRange.value}`, { headers: authStore.getHeaders() })
     if (res.data && res.data.length > 0) {
@@ -152,13 +202,15 @@ onMounted(() => {
   if (authStore.isAdmin) {
     checkSmtpConfig()
   }
-  pollInterval.value = setInterval(() => {
-    refetchAll()
-  }, 5000)
+  startPolling()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
-  if (pollInterval.value) clearInterval(pollInterval.value)
+  if (pollInterval.value) {
+    clearInterval(pollInterval.value)
+  }
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 // Chart Config Helper
@@ -287,9 +339,26 @@ const formatUptime = (seconds) => {
                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">Rango de tiempo</label>
                <select v-model="timeRange" @change="refetchAll" class="block w-full pl-3 pr-8 py-2 text-sm border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500">
                  <option value="1">Última hora</option>
-                 <option value="6">Últimas 6 horas</option>
+                 <option value="5">Últimas 5 horas</option>
+                 <option value="7">Últimas 7 horas</option>
+                 <option value="8">Últimas 8 horas</option>
+                 <option value="10">Últimas 10 horas</option>
                  <option value="24">Últimas 24 horas</option>
                </select>
+            </div>
+            <div class="relative w-full sm:w-56">
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">Actualización</label>
+              <select
+                v-model="refreshIntervalKey"
+                @change="startPolling"
+                class="block w-full pl-3 pr-8 py-2 text-sm border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="realtime">Tiempo real (5 s)</option>
+                <option value="5m">Cada 5 minutos</option>
+                <option value="10m">Cada 10 minutos</option>
+                <option value="30m">Cada 30 minutos</option>
+                <option value="60m">Cada 60 minutos</option>
+              </select>
             </div>
           </div>
           <div class="flex flex-row items-center justify-between w-full md:w-auto gap-4 border-t md:border-t-0 border-gray-100 dark:border-gray-700 pt-3 md:pt-0">
@@ -317,6 +386,58 @@ const formatUptime = (seconds) => {
                </button>
             </div>
           </div>
+        </div>
+
+        <div class="mb-4 -mt-2 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap items-center gap-2">
+          <span class="font-semibold mr-1">Métricas visibles:</span>
+          <button
+            type="button"
+            @click.stop="visibleMetrics.cpu = !visibleMetrics.cpu"
+            :class="[
+              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              visibleMetrics.cpu
+                ? 'bg-indigo-50 dark:bg-indigo-900/40 border-indigo-400 text-indigo-700 dark:text-indigo-200'
+                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+            ]"
+          >
+            CPU
+          </button>
+          <button
+            type="button"
+            @click.stop="visibleMetrics.memory = !visibleMetrics.memory"
+            :class="[
+              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              visibleMetrics.memory
+                ? 'bg-emerald-50 dark:bg-emerald-900/40 border-emerald-400 text-emerald-700 dark:text-emerald-200'
+                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+            ]"
+          >
+            Memoria
+          </button>
+          <button
+            type="button"
+            @click.stop="visibleMetrics.disk = !visibleMetrics.disk"
+            :class="[
+              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              visibleMetrics.disk
+                ? 'bg-amber-50 dark:bg-amber-900/40 border-amber-400 text-amber-700 dark:text-amber-200'
+                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+            ]"
+          >
+            Disco
+          </button>
+          <button
+            type="button"
+            @click.stop="visibleMetrics.network = !visibleMetrics.network"
+            :class="[
+              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              visibleMetrics.network
+                ? 'bg-sky-50 dark:bg-sky-900/40 border-sky-400 text-sky-700 dark:text-sky-200'
+                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+            ]"
+          >
+            Red
+          </button>
         </div>
 
         <div v-if="loading" class="flex justify-center py-12">
@@ -381,10 +502,20 @@ const formatUptime = (seconds) => {
             <!-- Card Body -->
             <div class="p-6 space-y-6" v-if="metrics[server.server_id]">
               <!-- CPU -->
-              <div>
+              <div v-if="visibleMetrics.cpu">
                 <div class="flex justify-between text-sm mb-1">
                   <span class="text-gray-500 dark:text-gray-400">CPU Usage</span>
-                  <span class="font-medium" :class="metrics[server.server_id].latest.cpu.total > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">{{ metrics[server.server_id].latest.cpu.total.toFixed(1) }}%</span>
+                  <span class="flex items-center gap-2">
+                    <span class="font-medium" :class="metrics[server.server_id].latest.cpu.total > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
+                      {{ metrics[server.server_id].latest.cpu.total.toFixed(1) }}%
+                    </span>
+                    <span
+                      v-if="metrics[server.server_id].latest.cpu.total > 90"
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                    >
+                      Alto
+                    </span>
+                  </span>
                 </div>
                 <div class="h-10">
                    <Line :data="getChartData(server.server_id, 'cpu')" :options="chartOptions" />
@@ -392,12 +523,20 @@ const formatUptime = (seconds) => {
               </div>
 
               <!-- Memory -->
-              <div>
+              <div v-if="visibleMetrics.memory">
                 <div class="flex justify-between text-sm mb-1">
                   <span class="text-gray-500 dark:text-gray-400">Memory</span>
-                  <span class="font-medium" :class="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
-                    {{ (metrics[server.server_id].latest.memory.used / 1024 / 1024 / 1024).toFixed(1) }} / 
-                    {{ (metrics[server.server_id].latest.memory.total / 1024 / 1024 / 1024).toFixed(1) }} GB
+                  <span class="flex items-center gap-2">
+                    <span class="font-medium" :class="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
+                      {{ (metrics[server.server_id].latest.memory.used / 1024 / 1024 / 1024).toFixed(1) }} / 
+                      {{ (metrics[server.server_id].latest.memory.total / 1024 / 1024 / 1024).toFixed(1) }} GB
+                    </span>
+                    <span
+                      v-if="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9"
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                    >
+                      Alto
+                    </span>
                   </span>
                 </div>
                  <div class="h-10">
@@ -406,10 +545,20 @@ const formatUptime = (seconds) => {
               </div>
               
               <!-- Disk -->
-              <div>
+              <div v-if="visibleMetrics.disk">
                 <div class="flex justify-between text-sm mb-1">
                    <span class="text-gray-500 dark:text-gray-400">Disk</span>
-                   <span class="font-medium" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">{{ metrics[server.server_id].latest.disk.percent }}%</span>
+                   <span class="flex items-center gap-2">
+                     <span class="font-medium" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
+                       {{ metrics[server.server_id].latest.disk.percent }}%
+                     </span>
+                     <span
+                       v-if="metrics[server.server_id].latest.disk.percent > 90"
+                       class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                     >
+                       Alto
+                     </span>
+                   </span>
                 </div>
                 <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
                   <div class="h-1.5 rounded-full" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'bg-red-500' : 'bg-yellow-500'" :style="{ width: metrics[server.server_id].latest.disk.percent + '%' }"></div>
@@ -417,7 +566,7 @@ const formatUptime = (seconds) => {
               </div>
               
               <!-- Network -->
-              <div>
+              <div v-if="visibleMetrics.network">
                 <div class="flex justify-between text-sm mb-1">
                   <span class="text-gray-500 dark:text-gray-400">Network</span>
                   <span v-if="metrics[server.server_id].latest.network" class="font-medium text-gray-900 dark:text-gray-100">

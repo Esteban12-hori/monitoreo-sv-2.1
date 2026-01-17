@@ -40,6 +40,13 @@ class AlertRule(Base):
     emails = Column(Text, nullable=False) # Lista de emails en JSON (e.g. ["a@b.com", "c@d.com"])
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Advanced Rules
+    condition_field = Column(String(100), nullable=True) # e.g. 'cpu.total'
+    condition_op = Column(String(10), nullable=True) # 'gt', 'lt', 'eq'
+    condition_value = Column(Float, nullable=True)
+    duration_seconds = Column(Integer, default=0)
+    severity = Column(String(20), default="warning")
+
 
 class Metric(Base):
     __tablename__ = "metrics"
@@ -70,6 +77,7 @@ class Metric(Base):
     docker_containers = Column(Text)  # JSON serializado
     
     services = Column(Text) # JSON serializado (Auto-discovery)
+    processes = Column(Text) # JSON serializado (Top processes)
 
 
 class AlertConfig(Base):

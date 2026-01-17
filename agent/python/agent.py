@@ -9,12 +9,10 @@ from pathlib import Path
 import psutil
 import requests
 import importlib.util
+from agent_base import AgentPlugin
 
 # --- Plugin System ---
-class AgentPlugin:
-    """Base class for all metrics plugins"""
-    def collect(self) -> dict:
-        raise NotImplementedError
+# class AgentPlugin moved to agent_base.py
 
 class MemoryPlugin(AgentPlugin):
     def collect(self):
@@ -142,6 +140,34 @@ class ServicesPlugin(AgentPlugin):
         except Exception:
             return {"services": []}
 
+class ProcessPlugin(AgentPlugin):
+    def collect(self):
+        processes = []
+        try:
+            # Get top 20 processes by CPU
+            for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'status']):
+                try:
+                    pinfo = proc.info
+                    # Skip if missing info
+                    if not pinfo['name']: continue
+                    
+                    processes.append({
+                        "pid": pinfo['pid'],
+                        "name": pinfo['name'],
+                        "username": pinfo['username'] or "unknown",
+                        "cpu_percent": pinfo['cpu_percent'] or 0.0,
+                        "memory_percent": pinfo['memory_percent'] or 0.0,
+                        "status": pinfo['status']
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            # Sort by CPU desc and take top 20
+            processes.sort(key=lambda x: x['cpu_percent'], reverse=True)
+            return {"processes": processes[:20]}
+        except Exception:
+            return {"processes": []}
+
 class PluginManager:
     def __init__(self):
         self.plugins = []
@@ -153,6 +179,7 @@ class PluginManager:
         self.register(UptimePlugin())
         self.register(DockerPlugin())
         self.register(ServicesPlugin())
+        self.register(ProcessPlugin())
         # Load external
         self.load_external_plugins()
     
@@ -203,6 +230,8 @@ def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls:
     logging.info(f"Iniciando bucle de monitoreo. Plugins cargados: {len(plugin_manager.plugins)}")
     
     while True:
+        start_time = time.time()
+        
         data = payload(server_id, plugin_manager)
         try:
             resp = requests.post(
@@ -213,10 +242,16 @@ def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls:
                 verify=verify_tls if verify_tls else True,
             )
             if resp.status_code == 200:
+                logging.info(
+                    "Métricas enviadas para server_id=%s a las %s (intervalo=%ss)",
+                    server_id,
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    interval,
+                )
                 try:
                     rj = resp.json()
                     new_interval = rj.get("report_interval")
-                    if new_interval and isinstance(new_interval, int) and new_interval != interval:
+                    if isinstance(new_interval, int) and new_interval != interval:
                         logging.info("Actualizando intervalo de %ss a %ss", interval, new_interval)
                         interval = new_interval
                 except Exception:
@@ -225,7 +260,18 @@ def loop(server_url: str, server_id: str, token: str, interval: int, verify_tls:
                 logging.error("Error enviando métricas %s %s", resp.status_code, resp.text)
         except Exception as e:
             logging.exception("Excepción enviando métricas: %s", e)
-        time.sleep(interval)
+        
+        # Compensación de tiempo para mantener el intervalo exacto
+        elapsed = time.time() - start_time
+        
+        # Si el intervalo es 0 (desactivado), dormimos un tiempo fijo (ej: 10s) para hacer "polling" de configuración
+        if interval <= 0:
+            sleep_time = 10
+        else:
+            # Si el intervalo es > 0, restamos el tiempo de ejecución
+            sleep_time = max(0.0, interval - elapsed)
+            
+        time.sleep(sleep_time)
 
 
 def load_config(path: Path) -> dict:

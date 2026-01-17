@@ -47,6 +47,14 @@ class ServiceSchema(BaseModel):
     proto: str
     ip: Optional[str] = None
 
+class ProcessSchema(BaseModel):
+    pid: int
+    name: str
+    username: str
+    cpu_percent: float
+    memory_percent: float
+    status: str
+
 class MetricsIngestSchema(BaseModel):
     server_id: str
     memory: MemorySchema
@@ -56,6 +64,7 @@ class MetricsIngestSchema(BaseModel):
     uptime: Optional[float] = None
     docker: DockerSchema
     services: Optional[List[ServiceSchema]] = []
+    processes: Optional[List[ProcessSchema]] = []
     timestamp: Optional[str] = None
 
 
@@ -140,7 +149,7 @@ class SMTPConfigResponse(BaseModel):
         from_attributes = True
 
 class ServerConfigUpdateSchema(BaseModel):
-    report_interval: int = Field(..., ge=5, le=86400) # 5s to 24h
+    report_interval: int = Field(..., ge=0, le=86400) # 0s to 24h
 
 
 class AlertRecipientSchema(BaseModel):
@@ -160,10 +169,17 @@ class AlertRecipientCreateSchema(BaseModel):
 
 
 class AlertRuleBase(BaseModel):
-    alert_type: str = Field(..., pattern="^(cpu|memory|disk|offline)$")
+    alert_type: str
     server_scope: str = Field(..., pattern="^(global|server|group)$")
     target_id: Optional[str] = None
     emails: List[EmailStr]
+
+    # Advanced
+    condition_field: Optional[str] = None
+    condition_op: Optional[str] = None # gt, lt, eq
+    condition_value: Optional[float] = None
+    duration_seconds: Optional[int] = 0
+    severity: Optional[str] = "warning"
 
 class AlertRuleCreate(AlertRuleBase):
     pass

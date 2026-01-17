@@ -286,10 +286,10 @@ const newUser = ref({
 })
 
 const goBack = () => {
-  router.back()
+  router.push('/dashboard')
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE = '' // Use relative path to leverage Vite proxy
 
 const fetchUsers = async () => {
   try {
@@ -297,6 +297,10 @@ const fetchUsers = async () => {
     users.value = res.data
   } catch (error) {
     console.error('Error fetching users:', error)
+    if (error.response && error.response.status === 401) {
+      authStore.logout()
+      router.push('/login')
+    }
   }
 }
 
@@ -306,6 +310,10 @@ const fetchServers = async () => {
     allServers.value = res.data
   } catch (error) {
     console.error('Error fetching servers:', error)
+    if (error.response && error.response.status === 401) {
+      authStore.logout()
+      router.push('/login')
+    }
   }
 }
 

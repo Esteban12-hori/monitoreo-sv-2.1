@@ -23,6 +23,21 @@ const error = ref('')
 const smtpNotConfigured = ref(false)
 const servers = ref([])
 const savingGroup = ref(null)
+const savingInterval = ref(null)
+
+const intervalOptions = [
+  { value: 0, label: 'Desactivado' },
+  { value: 5, label: 'Tiempo real (5s)' },
+  { value: 300, label: '5 minutos' },
+  { value: 600, label: '10 minutos' },
+  { value: 1800, label: '30 minutos' },
+  { value: 3600, label: '60 minutos' },
+  { value: 5 * 3600, label: '5 horas' },
+  { value: 7 * 3600, label: '7 horas' },
+  { value: 8 * 3600, label: '8 horas' },
+  { value: 10 * 3600, label: '10 horas' },
+  { value: 24 * 3600, label: '24 horas' }
+]
 
 onMounted(async () => {
   try {
@@ -44,7 +59,8 @@ onMounted(async () => {
     })
     servers.value = srvRes.data.map(s => ({
       ...s,
-      editGroup: s.group_name || ''
+      editGroup: s.group_name || '',
+      editInterval: s.report_interval ?? 2400
     }))
   } catch (e) {
     console.error('Error cargando servidores', e)
@@ -94,10 +110,46 @@ const saveServerGroup = async (server) => {
     })
     server.group_name = server.editGroup
   } catch (e) {
+    if (e.response && e.response.status === 401) {
+      authStore.logout()
+      router.push('/login')
+      return
+    }
     alert('Error guardando grupo: ' + (e.response?.data?.detail || e.message))
   } finally {
     savingGroup.value = null
   }
+}
+
+const saveServerInterval = async (server) => {
+  savingInterval.value = server.server_id
+  try {
+    await axios.put(`/api/admin/servers/${server.server_id}/config`, {
+      report_interval: parseInt(server.editInterval)
+    }, {
+      headers: authStore.getHeaders()
+    })
+    server.report_interval = parseInt(server.editInterval)
+    alert('Intervalo actualizado. El agente recogerá el cambio en su próximo reporte.')
+  } catch (e) {
+    if (e.response && e.response.status === 401) {
+      authStore.logout()
+      router.push('/login')
+      return
+    }
+    alert('Error guardando intervalo: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    savingInterval.value = null
+  }
+}
+
+const formatInterval = (seconds) => {
+  if (seconds === null || seconds === undefined) return 'Sin configurar'
+  if (seconds === 0) return 'Desactivado'
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} h`
+  return `${Math.round(seconds / 86400)} días`
 }
 </script>
 
@@ -246,6 +298,7 @@ const saveServerGroup = async (server) => {
                 <tr>
                   <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Servidor</th>
                   <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Grupo / Proyecto</th>
+                  <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Intervalo</th>
                   <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Acciones</th>
                 </tr>
               </thead>
@@ -265,14 +318,35 @@ const saveServerGroup = async (server) => {
                       placeholder="Ej: Proyecto 1"
                     >
                   </td>
-                  <td class="px-4 py-2 text-right">
+                  <td class="px-4 py-2">
+                    <select
+                      v-model="server.editInterval"
+                      class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    >
+                      <option v-for="opt in intervalOptions" :key="opt.value" :value="opt.value">
+                        {{ opt.label }}
+                      </option>
+                    </select>
+                    <div class="text-xs text-gray-500 mt-1">
+                      Actual: {{ server.report_interval }}s
+                    </div>
+                  </td>
+                  <td class="px-4 py-2 text-right space-x-2">
                     <button
                       @click="saveServerGroup(server)"
                       :disabled="savingGroup === server.server_id"
                       class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
                     >
-                      <span v-if="savingGroup === server.server_id">Guardando...</span>
-                      <span v-else>Guardar</span>
+                      <span v-if="savingGroup === server.server_id">...</span>
+                      <span v-else>Grp</span>
+                    </button>
+                    <button
+                      @click="saveServerInterval(server)"
+                      :disabled="savingInterval === server.server_id"
+                      class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                    >
+                      <span v-if="savingInterval === server.server_id">...</span>
+                      <span v-else>Int</span>
                     </button>
                   </td>
                 </tr>

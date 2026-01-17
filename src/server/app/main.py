@@ -27,15 +27,16 @@ from .schemas import (
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
-    UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse,
-    RemoteActionCreate, RemoteActionResponse
+    UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse
 )
 from .email_utils import send_alert_email
+from .alert_logic import get_alert_recipients, check_advanced_rules
 from .security import encrypt_password, decrypt_password
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import time
+import logging
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -226,6 +227,8 @@ _threshold_cache: dict[str, dict] = {}
 
 # Estado de alertas enviadas: {(server_id, alert_type): timestamp}
 _alert_state: dict[tuple[str, str], float] = {}
+# Estado de alertas avanzadas: {key: {"start": ts, "last_sent": ts}}
+_advanced_alert_state: dict[str, dict] = {}
 ALERT_COOLDOWN = 3600  # 1 hora
 
 def _norm(s: str) -> str:
@@ -492,30 +495,6 @@ def list_servers(user: dict = Depends(get_current_user_from_token)):
         ]
 
 
-@app.post("/api/admin/servers/{server_id}/actions/close-port", response_model=RemoteActionResponse)
-def create_close_port_action(server_id: str, payload: RemoteActionCreate, user: dict = Depends(require_admin)):
-    with Session(engine) as sess:
-        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
-        if not srv:
-            raise HTTPException(status_code=404, detail="Servidor no encontrado")
-        data = {
-            "port": payload.port,
-            "proto": payload.proto,
-            "ip": payload.ip,
-            "service": payload.service
-        }
-        action = RemoteAction(
-            server_id=server_id,
-            action_type="close_port",
-            payload=json.dumps(data),
-            status="pending",
-            requested_by=user["email"]
-        )
-        sess.add(action)
-        sess.commit()
-        sess.refresh(action)
-        return action
-
 @app.delete("/api/admin/servers/{server_id}")
 def delete_server(server_id: str, user: dict = Depends(require_admin)):
     with Session(engine) as sess:
@@ -551,43 +530,6 @@ def list_alert_recipients(user: dict = Depends(require_admin)):
     with Session(engine) as sess:
         recipients = sess.execute(select(AlertRecipient)).scalars().all()
     return recipients
-
-def get_alert_recipients(sess: Session, srv: Server, alert_type: str):
-    # 1. Default recipients
-    recipients = [r.email for r in sess.execute(select(AlertRecipient)).scalars().all()]
-    
-    # 2. Alert Rules
-    rules = sess.execute(select(AlertRule).where(AlertRule.alert_type == alert_type)).scalars().all()
-    applied_rules = []
-    
-    for rule in rules:
-        match = False
-        if rule.server_scope == 'global':
-            match = True
-        elif rule.server_scope == 'server' and rule.target_id == srv.server_id:
-            match = True
-        elif rule.server_scope == 'group' and rule.target_id == srv.group_name:
-            match = True
-            
-        if match:
-            applied_rules.append(rule.id)
-            try:
-                rule_emails = json.loads(rule.emails)
-                if isinstance(rule_emails, list):
-                    recipients.extend(rule_emails)
-            except:
-                pass
-                
-    # 3. Assigned Users
-    # srv is a Server object, which has 'user_links' relationship
-    if srv.user_links:
-        for link in srv.user_links:
-            # Check link specific flag (defaults to True).
-            # We assume explicit assignment implies permission unless turned off.
-            if link.receive_alerts and link.user.email:
-                recipients.append(link.user.email)
-
-    return list(set(recipients)), applied_rules
 
 @app.post("/api/admin/recipients", response_model=AlertRecipientSchema)
 def create_alert_recipient(payload: AlertRecipientCreateSchema, user: dict = Depends(require_admin)):
@@ -658,7 +600,12 @@ def list_alert_rules(user: dict = Depends(require_admin)):
                 server_scope=r.server_scope,
                 target_id=r.target_id,
                 emails=emails_list,
-                created_at=r.created_at
+                created_at=r.created_at,
+                condition_field=r.condition_field,
+                condition_op=r.condition_op,
+                condition_value=r.condition_value,
+                duration_seconds=r.duration_seconds,
+                severity=r.severity
             ))
         return res
 
@@ -669,7 +616,12 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             alert_type=payload.alert_type,
             server_scope=payload.server_scope,
             target_id=payload.target_id,
-            emails=json.dumps(payload.emails)
+            emails=json.dumps(payload.emails),
+            condition_field=payload.condition_field,
+            condition_op=payload.condition_op,
+            condition_value=payload.condition_value,
+            duration_seconds=payload.duration_seconds,
+            severity=payload.severity
         )
         sess.add(new_rule)
         sess.commit()
@@ -681,7 +633,12 @@ def create_alert_rule(payload: AlertRuleCreate, user: dict = Depends(require_adm
             server_scope=new_rule.server_scope,
             target_id=new_rule.target_id,
             emails=payload.emails,
-            created_at=new_rule.created_at
+            created_at=new_rule.created_at,
+            condition_field=new_rule.condition_field,
+            condition_op=new_rule.condition_op,
+            condition_value=new_rule.condition_value,
+            duration_seconds=new_rule.duration_seconds,
+            severity=new_rule.severity
         )
 
 @app.delete("/api/admin/alert-rules/{rule_id}")
@@ -840,29 +797,44 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
         if not (0 <= payload.disk.percent <= 100):
             raise HTTPException(status_code=422, detail="disk.percent fuera de rango")
 
-        m = Metric(
-            server_id=payload.server_id,
-            mem_total=payload.memory.total,
-            mem_used=payload.memory.used,
-            mem_free=payload.memory.free,
-            mem_cache=payload.memory.cache,
-            cpu_total=payload.cpu.total,
-            cpu_per_core=json.dumps(payload.cpu.per_core),
-            disk_total=payload.disk.total,
-            disk_used=payload.disk.used,
-            disk_free=payload.disk.free,
-            disk_percent=payload.disk.percent,
-            net_bytes_sent=payload.network.bytes_sent if payload.network else 0,
-            net_bytes_recv=payload.network.bytes_recv if payload.network else 0,
-            net_sent_rate=payload.network.sent_rate if payload.network and payload.network.sent_rate is not None else 0.0,
-            net_recv_rate=payload.network.recv_rate if payload.network and payload.network.recv_rate is not None else 0.0,
-            uptime_seconds=payload.uptime if payload.uptime else 0,
-            docker_running=payload.docker.running_containers,
-            docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
-            services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]",
-        )
-        sess.add(m)
-        sess.commit()
+        if srv.report_interval > 0:
+            m = Metric(
+                server_id=payload.server_id,
+                mem_total=payload.memory.total,
+                mem_used=payload.memory.used,
+                mem_free=payload.memory.free,
+                mem_cache=payload.memory.cache,
+                cpu_total=payload.cpu.total,
+                cpu_per_core=json.dumps(payload.cpu.per_core),
+                disk_total=payload.disk.total,
+                disk_used=payload.disk.used,
+                disk_free=payload.disk.free,
+                disk_percent=payload.disk.percent,
+                net_bytes_sent=payload.network.bytes_sent if payload.network else 0,
+                net_bytes_recv=payload.network.bytes_recv if payload.network else 0,
+                net_sent_rate=payload.network.sent_rate if payload.network and payload.network.sent_rate is not None else 0.0,
+                net_recv_rate=payload.network.recv_rate if payload.network and payload.network.recv_rate is not None else 0.0,
+                uptime_seconds=payload.uptime if payload.uptime else 0,
+                docker_running=payload.docker.running_containers,
+                docker_containers=json.dumps([c.model_dump() for c in payload.docker.containers]),
+                services=json.dumps([s.model_dump() for s in payload.services]) if payload.services else "[]",
+                processes=json.dumps([p.model_dump() for p in payload.processes]) if payload.processes else "[]",
+            )
+            sess.add(m)
+            sess.commit()
+        else:
+             # Si el intervalo es 0, no guardamos métricas (modo desactivado/heartbeat)
+             pass
+
+        try:
+            logging.info(
+                "Metrics update for server_id=%s at %s (report_interval=%s)",
+                payload.server_id,
+                datetime.utcnow().isoformat() + "Z",
+                srv.report_interval,
+            )
+        except Exception:
+            pass
 
         # Verificar Alertas
         try:
@@ -883,6 +855,9 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 else:
                     thresholds = {}
                 _threshold_cache[payload.server_id] = thresholds
+            
+            # --- Check Advanced Rules ---
+            check_advanced_rules(sess, srv, payload, _advanced_alert_state)
             
             # Definir límites efectivos (Global vs Específico)
             # Prioridad: Específico > Global
@@ -956,6 +931,7 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                 "uptime": m.uptime_seconds,
                 "docker": payload.docker.model_dump(),
                 "services": [s.model_dump() for s in payload.services] if payload.services else [],
+                "processes": [p.model_dump() for p in payload.processes] if payload.processes else [],
             }
             buf = _cache.get(payload.server_id)
             if not buf:

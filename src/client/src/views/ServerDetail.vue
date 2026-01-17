@@ -1,7 +1,11 @@
 <template>
   <div class="space-y-6">
     <!-- Breadcrumb & Header -->
-    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+    <div
+      class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4
+             bg-indigo-200/80 dark:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-700
+             rounded-2xl shadow-sm px-4 py-3 sm:px-6 sm:py-4 backdrop-blur"
+    >
       <div class="w-full">
         <div class="flex items-center gap-3 mb-2">
           <button
@@ -56,12 +60,14 @@
         <select 
           v-model="timeRange" 
           @change="fetchHistory"
-          class="block w-full lg:w-32 rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:bg-gray-700 dark:text-white"
+          class="block w-full lg:w-40 rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:bg-gray-700 dark:text-white"
         >
-          <option value="1">Última hora</option>
-          <option value="6">6 horas</option>
-          <option value="24">24 horas</option>
-          <option value="168">7 días</option>
+          <option :value="1">Última hora</option>
+          <option :value="5">Últimas 5 horas</option>
+          <option :value="7">Últimas 7 horas</option>
+          <option :value="8">Últimas 8 horas</option>
+          <option :value="10">Últimas 10 horas</option>
+          <option :value="24">Últimas 24 horas</option>
         </select>
         <button @click="fetchHistory" class="p-2 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors" title="Actualizar ahora">
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -183,6 +189,17 @@
         </div>
         <p class="text-xs text-gray-500">Total: {{ latestMetrics.docker.total_containers }} Contenedores</p>
       </div>
+    </div>
+
+    <!-- Empty State -->
+    <div v-else class="mt-6 bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-8 text-center">
+      <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Sin datos de métricas aún</h2>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-1">
+        Todavía no hemos recibido información reciente del servidor <span class="font-mono">{{ serverId }}</span>.
+      </p>
+      <p class="text-sm text-gray-500 dark:text-gray-400">
+        Verifica que el agente esté instalado y ejecutándose, o espera unos segundos y vuelve a actualizar.
+      </p>
     </div>
 
     <!-- Charts Section -->
@@ -315,6 +332,65 @@
       </div>
     </div>
 
+    <!-- Processes Details -->
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden mt-6">
+      <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+          <svg class="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Procesos Top (CPU/Mem)
+        </h3>
+        <span v-if="latestMetrics && latestMetrics.processes" class="text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2.5 py-0.5 rounded-full">
+          {{ parseProcesses(latestMetrics.processes).length }} Procesos
+        </span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+          <thead class="bg-gray-50 dark:bg-gray-700/50">
+            <tr>
+              <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">PID</th>
+              <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Nombre</th>
+              <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Usuario</th>
+              <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">CPU %</th>
+              <th scope="col" class="px-4 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Mem %</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+            <tr v-if="!latestMetrics" class="animate-pulse">
+               <td colspan="5" class="px-6 py-4 text-center text-sm text-gray-500">Cargando procesos...</td>
+            </tr>
+            <tr v-else-if="!latestMetrics.processes || parseProcesses(latestMetrics.processes).length === 0">
+               <td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400 flex flex-col items-center gap-2">
+                 No hay procesos reportados
+               </td>
+            </tr>
+            <tr v-for="(proc, idx) in (latestMetrics ? parseProcesses(latestMetrics.processes) : [])" :key="idx" class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+              <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-500 dark:text-gray-400">
+                {{ proc.pid }}
+              </td>
+              <td class="px-4 sm:px-6 py-4 whitespace-nowrap">
+                <div class="text-sm font-medium text-gray-900 dark:text-white">{{ proc.name }}</div>
+              </td>
+              <td class="px-4 sm:px-6 py-4 whitespace-nowrap">
+                <div class="text-sm text-gray-500 dark:text-gray-300">{{ proc.username }}</div>
+              </td>
+              <td class="px-4 sm:px-6 py-4 whitespace-nowrap">
+                <span class="px-2 py-0.5 text-xs font-medium rounded-full" :class="proc.cpu_percent > 50 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'">
+                  {{ proc.cpu_percent.toFixed(1) }}%
+                </span>
+              </td>
+              <td class="px-4 sm:px-6 py-4 whitespace-nowrap">
+                <span class="px-2 py-0.5 text-xs font-medium rounded-full" :class="proc.memory_percent > 50 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'">
+                   {{ proc.memory_percent.toFixed(1) }}%
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="mt-6 bg-white dark:bg-gray-900 rounded-2xl shadow-lg border border-purple-100/60 dark:border-purple-800/60 overflow-hidden">
       <div class="px-6 py-4 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-500 flex justify-between items-center">
         <h3 class="text-lg font-semibold text-white flex items-center gap-2">
@@ -394,13 +470,22 @@
                 </span>
               </td>
               <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-right" v-if="isAdmin">
-                <button
-                  type="button"
-                  class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-full border border-red-500 text-red-600 hover:bg-red-50 dark:text-red-300 dark:border-red-400 dark:hover:bg-red-900/40 transition-colors"
-                  @click="requestPortClose(svc)"
-                >
-                  Cerrar puerto
-                </button>
+                <div class="flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:border-gray-500 dark:hover:bg-gray-800 transition-colors"
+                    @click="copyServiceEndpoint(svc)"
+                  >
+                    Copiar IP:puerto
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-full border border-indigo-500 text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:border-indigo-400 dark:hover:bg-indigo-900/30 transition-colors"
+                    @click="openServiceInfo(svc)"
+                  >
+                    Buscar servicio
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -459,18 +544,24 @@ let pollTimer = null
 
 const isAdmin = computed(() => authStore.isAdmin)
 
-const requestPortClose = async (svc) => {
+const copyServiceEndpoint = async (svc) => {
+  const text = `${svc.ip || '*'}:${svc.port}/${svc.proto || 'tcp'}`
   try {
-    await axios.post(`${API_BASE}/api/admin/servers/${serverId}/actions/close-port`, {
-      port: svc.port,
-      proto: svc.proto,
-      ip: svc.ip,
-      service: svc.name
-    }, { headers: authStore.getHeaders() })
-    alert(`Se ha registrado una acción para cerrar el puerto ${svc.port}/${svc.proto || 'tcp'}. Aplícalo en el agente de ${serverId} para Linux o Windows Server.`)
-  } catch (error) {
-    alert('Error registrando acción de cierre de puerto: ' + (error.response?.data?.detail || error.message))
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+      alert(`Copiado: ${text}`)
+    } else {
+      window.prompt('Copiar endpoint del servicio:', text)
+    }
+  } catch (e) {
+    window.prompt('Copiar endpoint del servicio:', text)
   }
+}
+
+const openServiceInfo = (svc) => {
+  const name = svc.name || 'servicio'
+  const query = encodeURIComponent(`${name} puerto ${svc.port} ${svc.proto || ''}`.trim())
+  window.open(`https://www.google.com/search?q=${query}`, '_blank', 'noopener')
 }
 
 const chartOptions = {
@@ -564,6 +655,16 @@ const parseServices = (val) => {
   }
 }
 
+const parseProcesses = (val) => {
+  if (!val) return []
+  if (Array.isArray(val)) return val
+  try {
+    return JSON.parse(val)
+  } catch (e) {
+    return []
+  }
+}
+
 const servicesSummary = computed(() => {
   const list = latestMetrics.value && latestMetrics.value.services ? parseServices(latestMetrics.value.services) : []
   const criticalPorts = new Set([22, 80, 443, 3389, 5900, 8080])
@@ -617,6 +718,10 @@ const fetchServerInfo = async () => {
     serverInfo.value = res.data.find(s => s.server_id === serverId)
   } catch (e) {
     console.error(e)
+    if (e.response && e.response.status === 401) {
+       authStore.logout()
+       router.push('/login')
+    }
   }
 }
 
@@ -785,6 +890,10 @@ const fetchHistory = async () => {
 
   } catch (error) {
     console.error("Error fetching metrics detail", error)
+    if (error.response && error.response.status === 401) {
+       authStore.logout()
+       router.push('/login')
+    }
   } finally {
     isLoading.value = false
   }
