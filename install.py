@@ -123,7 +123,7 @@ def create_env_file():
         print(".env file already exists.")
 
 def main():
-    print_step("Monitor Integral - Installer")
+    print_step("UpKeep - Installer")
     
     check_requirements()
     create_env_file()

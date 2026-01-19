@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Iniciando Monitor Integral (backend + frontend) ===" -ForegroundColor Cyan
+Write-Host "=== Iniciando UpKeep (backend + frontend) ===" -ForegroundColor Cyan
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RootDir "src\server"

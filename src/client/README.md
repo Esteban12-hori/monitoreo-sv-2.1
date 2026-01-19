@@ -1,6 +1,6 @@
-# Monitor Integral – Frontend (Panel Web)
+# UpKeep – Frontend (Panel Web)
 
-Este directorio contiene la aplicación web (dashboard) del sistema de monitoreo de servidores **Monitor Integral**.
+Este directorio contiene la aplicación web (dashboard) del sistema de monitoreo de servidores **UpKeep**.
 
 ## 🌐 ¿Qué ofrece el panel web?
 
@@ -23,6 +23,12 @@ Este directorio contiene la aplicación web (dashboard) del sistema de monitoreo
 - TailwindCSS
 - Chart.js + vue-chartjs
 - Axios
+
+## 🎨 Assets y UI
+
+El proyecto incluye assets personalizados para mejorar la identificación visual:
+- **Logos de SO**: Detección automática de Linux y Windows en el dashboard.
+- **Iconos**: Integración de logos SVG y PNG para una experiencia visual rica.
 
 ## 🛠 Desarrollo local
 

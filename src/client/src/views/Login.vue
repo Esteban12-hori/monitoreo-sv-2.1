@@ -43,13 +43,11 @@ const handleLogin = async () => {
   <div class="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 transition-colors duration-200">
     <div class="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 dark:border-gray-700">
       <div class="text-center mb-8">
-        <div class="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-blue-50 dark:bg-blue-900/30 mb-4 text-blue-600 dark:text-blue-400">
-          <svg class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
+        <div class="inline-flex items-center justify-center h-24 w-24 mb-4">
+          <img src="../assets/logo.png" alt="Logo" class="h-full w-full object-contain" />
         </div>
         <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Welcome Back</h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Sign in to your monitoring dashboard</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Sign in to UpKeep</p>
       </div>
 
       <div v-if="error" class="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 px-4 py-3 rounded-md mb-6 text-sm">

@@ -51,7 +51,7 @@ from .database import engine
 
 Base.metadata.create_all(engine)
 
-app = FastAPI(title="Monitor Integral")
+app = FastAPI(title="UpKeep")
 
 # --- Rate Limiting Setup ---
 limiter = Limiter(key_func=get_remote_address)
@@ -993,6 +993,7 @@ def metrics_history(
                     "uptime": r.uptime_seconds,
                     "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
                     "services": json.loads(r.services or "[]"),
+                    "processes": json.loads(r.processes or "[]"),
                 }
             data = [row_to_dict(r) for r in rows]
             if server_id:

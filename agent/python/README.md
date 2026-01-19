@@ -11,6 +11,7 @@ Este agente es un script ligero en Python diseñado para recolectar métricas de
   - Uso de Memoria RAM.
   - Uso de Disco.
   - Estado de contenedores Docker (si está instalado).
+  - Lista de Procesos (Top 20 por CPU) para detección de SO.
 
 ---
 

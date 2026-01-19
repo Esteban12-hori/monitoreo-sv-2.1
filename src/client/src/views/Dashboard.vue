@@ -11,7 +11,8 @@ import {
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  Filler
 } from 'chart.js'
 import { Line } from 'vue-chartjs'
 
@@ -22,7 +23,8 @@ ChartJS.register(
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  Filler
 )
 
 const authStore = useAuthStore()
@@ -232,7 +234,9 @@ const getChartData = (serverId, type) => {
     datasets: [{
       label: type.toUpperCase() + ' %',
       data: dataset,
-      borderColor: type === 'cpu' ? '#3B82F6' : type === 'memory' ? '#10B981' : '#F59E0B',
+      borderColor: type === 'cpu' ? '#22d3ee' : type === 'memory' ? '#34d399' : '#f59e0b',
+      backgroundColor: type === 'cpu' ? 'rgba(34, 211, 238, 0.1)' : type === 'memory' ? 'rgba(52, 211, 153, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+      fill: true,
       tension: 0.4,
       pointRadius: 0
     }]
@@ -248,6 +252,9 @@ const chartOptions = {
   scales: {
     x: { display: false },
     y: { display: false, min: 0, max: 100 }
+  },
+  elements: {
+    line: { borderWidth: 2 }
   }
 }
 
@@ -271,30 +278,43 @@ const formatUptime = (seconds) => {
   s += `${m}m`
   return s || '0m'
 }
+
+const getServerOs = (server) => {
+  const m = metrics.value[server.server_id]?.latest
+  if (!m) return 'unknown'
+  
+  if (m.processes && Array.isArray(m.processes) && m.processes.length > 0) {
+      const isWin = m.processes.some(p => p.name.toLowerCase().endsWith('.exe'))
+      if (isWin) return 'windows'
+      return 'linux'
+  }
+  return 'unknown'
+}
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-100 dark:bg-gray-900 flex flex-col font-sans text-gray-900 dark:text-gray-100 transition-colors duration-200">
+  <div class="min-h-screen bg-[#0b1120] flex flex-col font-sans text-gray-100 selection:bg-cyan-500/30">
     <!-- Top Navigation -->
-    <header class="bg-white dark:bg-gray-800 shadow-sm z-10 border-b border-transparent dark:border-gray-700 transition-colors duration-200">
+    <header class="bg-[#111827]/80 backdrop-blur-md shadow-sm z-10 border-b border-gray-800 sticky top-0">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
-          <div class="flex items-center">
-            <svg class="h-8 w-8 text-blue-600 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-            <span class="ml-2 text-xl font-bold tracking-tight text-gray-900 dark:text-white">MonitorIntegral</span>
-          </div>
+          <!-- Logo / Brand -->
+                <div class="flex-shrink-0 flex items-center gap-3">
+                  <div class="h-24 w-24 rounded-lg overflow-hidden">
+                    <img src="../assets/logo.png" alt="Logo" class="h-full w-full object-contain" />
+                  </div>
+                  <span class="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-400">UpKeep</span>
+                </div>
           <div class="flex items-center space-x-4">
-            <router-link v-if="authStore.isAdmin" to="/admin/users" class="text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 mr-2">
+            <router-link v-if="authStore.isAdmin" to="/admin/users" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors mr-2">
               Users
             </router-link>
             <div class="flex flex-col items-end">
-              <span class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ authStore.user?.name || authStore.user?.email }}</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400" v-if="authStore.isAdmin">Administrator</span>
+              <span class="text-sm font-medium text-gray-200">{{ authStore.user?.name || authStore.user?.email }}</span>
+              <span class="text-xs text-cyan-500/80" v-if="authStore.isAdmin">Administrator</span>
             </div>
-            <button @click="logout" class="text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors">
-              <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button @click="logout" class="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-lg hover:bg-gray-800/50">
+              <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
             </button>
@@ -304,40 +324,45 @@ const formatUptime = (seconds) => {
     </header>
 
     <!-- Main Content -->
-    <main class="flex-1 overflow-y-auto p-4 sm:p-8">
+    <main class="flex-1 overflow-y-auto p-4 sm:p-8 custom-scrollbar">
       <div class="max-w-7xl mx-auto">
-        <div class="flex justify-between items-center mb-6">
-          <h1 class="text-2xl font-bold text-gray-800 dark:text-white">Server Overview</h1>
+        <div class="flex justify-between items-center mb-8">
+          <h1 class="text-2xl font-bold text-white flex items-center gap-3">
+            Server Overview
+            <span class="text-xs font-normal px-2.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">
+              {{ filteredServers.length }} Active
+            </span>
+          </h1>
           <div class="flex space-x-2" v-if="authStore.isAdmin">
-             <router-link to="/setup" class="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+             <router-link to="/setup" class="px-4 py-2 bg-[#1f2937] border border-gray-700 rounded-lg shadow-sm text-sm font-medium text-gray-300 hover:bg-gray-800 hover:text-white transition-all">
                Settings
              </router-link>
           </div>
         </div>
 
-        <div v-if="smtpWarning" class="mb-4 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-700 text-yellow-800 dark:text-yellow-200 px-4 py-3 rounded-2xl text-sm flex items-start">
-          <svg class="h-5 w-5 mr-2 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div v-if="smtpWarning" class="mb-6 bg-yellow-900/20 border border-yellow-500/20 text-yellow-200 px-4 py-3 rounded-xl text-sm flex items-start">
+          <svg class="h-5 w-5 mr-2 mt-0.5 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14L12 5 4.93 19z" />
           </svg>
           <div>
-            <p class="font-medium">SMTP no está configurado.</p>
-            <p class="mt-1">Las alertas por correo no se enviarán hasta que completes la configuración en Settings.</p>
+            <p class="font-medium text-yellow-400">SMTP no está configurado.</p>
+            <p class="mt-1 opacity-80">Las alertas por correo no se enviarán hasta que completes la configuración en Settings.</p>
           </div>
         </div>
 
         <!-- Filter Bar -->
-        <div class="mb-6 bg-white dark:bg-gray-800 p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col md:flex-row gap-4 justify-between items-start md:items-center transition-colors duration-200">
-          <div class="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full md:w-auto">
+        <div class="mb-8 bg-[#111827] p-4 rounded-2xl shadow-lg border border-gray-800 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+          <div class="flex flex-col sm:flex-row gap-4 w-full md:w-auto">
             <div class="relative w-full sm:w-48">
-              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">Grupo</label>
-              <select v-model="selectedGroup" class="block w-full pl-3 pr-8 py-2 text-sm border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+              <label class="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Grupo</label>
+              <select v-model="selectedGroup" class="block w-full px-3 py-2 text-sm border border-gray-700 bg-gray-900/50 text-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 transition-colors">
                 <option value="all">Todos los grupos</option>
                 <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
               </select>
             </div>
             <div class="relative w-full sm:w-48">
-               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">Rango de tiempo</label>
-               <select v-model="timeRange" @change="refetchAll" class="block w-full pl-3 pr-8 py-2 text-sm border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+               <label class="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Rango de tiempo</label>
+               <select v-model="timeRange" @change="refetchAll" class="block w-full px-3 py-2 text-sm border border-gray-700 bg-gray-900/50 text-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 transition-colors">
                  <option value="1">Última hora</option>
                  <option value="5">Últimas 5 horas</option>
                  <option value="7">Últimas 7 horas</option>
@@ -347,11 +372,11 @@ const formatUptime = (seconds) => {
                </select>
             </div>
             <div class="relative w-full sm:w-56">
-              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wider">Actualización</label>
+              <label class="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Actualización</label>
               <select
                 v-model="refreshIntervalKey"
                 @change="startPolling"
-                class="block w-full pl-3 pr-8 py-2 text-sm border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                class="block w-full px-3 py-2 text-sm border border-gray-700 bg-gray-900/50 text-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 transition-colors"
               >
                 <option value="realtime">Tiempo real (5 s)</option>
                 <option value="5m">Cada 5 minutos</option>
@@ -361,43 +386,37 @@ const formatUptime = (seconds) => {
               </select>
             </div>
           </div>
-          <div class="flex flex-row items-center justify-between w-full md:w-auto gap-4 border-t md:border-t-0 border-gray-100 dark:border-gray-700 pt-3 md:pt-0">
-            <div class="text-sm text-gray-500 dark:text-gray-400 font-medium">
-              {{ filteredServers.length }} servidores
-            </div>
-            <div class="flex items-center space-x-2">
-               <button @click="showInstallModal = true" class="px-3 py-2 bg-indigo-600 border border-indigo-600 rounded-lg shadow-sm text-xs font-medium text-white hover:bg-indigo-700 flex items-center transition-colors" title="Add Server">
-                 <svg class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div class="flex flex-row items-center justify-end w-full md:w-auto gap-3 pt-2 md:pt-0">
+               <button @click="showInstallModal = true" class="px-4 py-2 bg-gradient-to-r from-indigo-600 to-indigo-500 border border-indigo-500/50 rounded-lg shadow-lg shadow-indigo-500/20 text-xs font-bold text-white hover:from-indigo-500 hover:to-indigo-400 flex items-center gap-2 transition-all transform hover:scale-105" title="Add Server">
+                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
                  </svg>
                  Add Server
                </button>
-               <button @click="exportData('csv')" class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 flex items-center transition-colors" title="Export CSV">
-                 <svg class="h-4 w-4 mr-1.5 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <div class="h-8 w-px bg-gray-700 mx-2"></div>
+               <button @click="exportData('csv')" class="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-green-400 hover:border-green-500/30 transition-all" title="Export CSV">
+                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                  </svg>
-                 CSV
                </button>
-               <button @click="exportData('json')" class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm text-xs font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 flex items-center transition-colors" title="Export JSON">
-                 <svg class="h-4 w-4 mr-1.5 text-yellow-600 dark:text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <button @click="exportData('json')" class="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-yellow-400 hover:border-yellow-500/30 transition-all" title="Export JSON">
+                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
                  </svg>
-                 JSON
                </button>
-            </div>
           </div>
         </div>
 
-        <div class="mb-4 -mt-2 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap items-center gap-2">
-          <span class="font-semibold mr-1">Métricas visibles:</span>
+        <div class="mb-6 -mt-2 text-xs text-gray-400 flex flex-wrap items-center gap-3">
+          <span class="font-bold text-gray-500 uppercase tracking-wider mr-1">Visible Metrics:</span>
           <button
             type="button"
             @click.stop="visibleMetrics.cpu = !visibleMetrics.cpu"
             :class="[
-              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              'px-3 py-1 rounded-md border text-xs font-medium transition-all',
               visibleMetrics.cpu
-                ? 'bg-indigo-50 dark:bg-indigo-900/40 border-indigo-400 text-indigo-700 dark:text-indigo-200'
-                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+                ? 'bg-cyan-500/10 border-cyan-500/50 text-cyan-400'
+                : 'bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600'
             ]"
           >
             CPU
@@ -406,64 +425,85 @@ const formatUptime = (seconds) => {
             type="button"
             @click.stop="visibleMetrics.memory = !visibleMetrics.memory"
             :class="[
-              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              'px-3 py-1 rounded-md border text-xs font-medium transition-all',
               visibleMetrics.memory
-                ? 'bg-emerald-50 dark:bg-emerald-900/40 border-emerald-400 text-emerald-700 dark:text-emerald-200'
-                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+                ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400'
+                : 'bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600'
             ]"
           >
-            Memoria
+            Memory
           </button>
           <button
             type="button"
             @click.stop="visibleMetrics.disk = !visibleMetrics.disk"
             :class="[
-              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              'px-3 py-1 rounded-md border text-xs font-medium transition-all',
               visibleMetrics.disk
-                ? 'bg-amber-50 dark:bg-amber-900/40 border-amber-400 text-amber-700 dark:text-amber-200'
-                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+                ? 'bg-amber-500/10 border-amber-500/50 text-amber-400'
+                : 'bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600'
             ]"
           >
-            Disco
+            Disk
           </button>
           <button
             type="button"
             @click.stop="visibleMetrics.network = !visibleMetrics.network"
             :class="[
-              'px-2 py-1 rounded-full border text-xs font-medium transition-colors',
+              'px-3 py-1 rounded-md border text-xs font-medium transition-all',
               visibleMetrics.network
-                ? 'bg-sky-50 dark:bg-sky-900/40 border-sky-400 text-sky-700 dark:text-sky-200'
-                : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+                ? 'bg-blue-500/10 border-blue-500/50 text-blue-400'
+                : 'bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-600'
             ]"
           >
-            Red
+            Network
           </button>
         </div>
 
-        <div v-if="loading" class="flex justify-center py-12">
-          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 dark:border-blue-400"></div>
+        <div v-if="loading" class="flex justify-center py-24">
+          <div class="relative">
+            <div class="animate-spin rounded-full h-16 w-16 border-b-2 border-cyan-500"></div>
+            <div class="absolute inset-0 flex items-center justify-center">
+              <span class="h-2 w-2 bg-cyan-500 rounded-full animate-pulse"></span>
+            </div>
+          </div>
         </div>
 
-        <div v-else-if="servers.length === 0" class="text-center py-12 bg-white dark:bg-gray-800 rounded-2xl shadow dark:border dark:border-gray-700 transition-colors duration-200">
-          <svg class="mx-auto h-12 w-12 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 01-2 2v4a2 2 0 012 2h14a2 2 0 012-2v-4a2 2 0 01-2-2m-2-4h.01M17 16h.01" />
-          </svg>
-          <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No hay servidores monitoreados todavía</h3>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Instala el agente en un servidor para empezar a ver métricas.</p>
+        <div v-else-if="servers.length === 0" class="text-center py-24 bg-[#111827] rounded-3xl shadow-lg border border-gray-800">
+          <div class="bg-gray-800/50 w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-6">
+            <svg class="h-10 w-10 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 01-2 2v4a2 2 0 012 2h14a2 2 0 012-2v-4a2 2 0 01-2-2m-2-4h.01M17 16h.01" />
+            </svg>
+          </div>
+          <h3 class="mt-2 text-lg font-medium text-white">No servers monitored yet</h3>
+          <p class="mt-2 text-gray-400 max-w-sm mx-auto">Install the agent on your server to start visualizing metrics in real-time.</p>
 
-          <div v-if="authStore.isAdmin" class="mt-6 max-w-2xl mx-auto text-left">
-            <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-2">Instalación rápida del agente</h4>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
-              Ejecuta estos comandos en tu servidor Linux o Windows Server que quieras monitorear.
-            </p>
-            <div class="grid gap-4 md:grid-cols-2">
-              <div class="bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
-                <div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Linux (incluido Linux Server)</div>
-                <pre class="text-xs bg-gray-900 text-gray-100 rounded-lg px-3 py-2 overflow-x-auto"><code>bash agent/python/quick_install.sh</code></pre>
+          <div v-if="authStore.isAdmin" class="mt-10 max-w-3xl mx-auto text-left px-6">
+            <h4 class="text-sm font-bold text-gray-300 mb-4 uppercase tracking-wider text-center">Quick Agent Installation</h4>
+            <div class="grid gap-6 md:grid-cols-2">
+              <div class="bg-gray-900/50 border border-gray-700 rounded-xl p-6 hover:border-gray-600 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="p-2 bg-gray-800 rounded-lg">
+                    <svg class="w-5 h-5 text-gray-300" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                  </div>
+                  <div class="text-sm font-medium text-gray-200">Linux / macOS</div>
+                </div>
+                <div class="relative group">
+                   <pre class="text-xs bg-black text-gray-300 rounded-lg p-4 font-mono overflow-x-auto border border-gray-800 group-hover:border-gray-600 transition-colors"><code>bash agent/python/quick_install.sh</code></pre>
+                   <div class="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                     <span class="text-[10px] text-gray-500">Click to copy</span>
+                   </div>
+                </div>
               </div>
-              <div class="bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
-                <div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Windows / Windows Server</div>
-                <pre class="text-xs bg-gray-900 text-gray-100 rounded-lg px-3 py-2 overflow-x-auto"><code>agent\python\quick_install.bat</code></pre>
+              <div class="bg-gray-900/50 border border-gray-700 rounded-xl p-6 hover:border-gray-600 transition-colors">
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="p-2 bg-gray-800 rounded-lg">
+                    <svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 24 24"><path d="M3 12V3l9 1v8l-9 1zm10-7.8l9 1.2v6.6l-9 1V4.2zM3 21l9-1.2v-6.6l-9 1V21zm10-7.8l9 1.2v6.6l-9 1v-6.8z"/></svg>
+                  </div>
+                  <div class="text-sm font-medium text-gray-200">Windows Server</div>
+                </div>
+                <div class="relative group">
+                  <pre class="text-xs bg-black text-gray-300 rounded-lg p-4 font-mono overflow-x-auto border border-gray-800 group-hover:border-gray-600 transition-colors"><code>agent\python\quick_install.bat</code></pre>
+                </div>
               </div>
             </div>
           </div>
@@ -471,125 +511,119 @@ const formatUptime = (seconds) => {
 
         <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <div v-for="server in filteredServers" :key="server.server_id" 
-               class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden hover:shadow-md transition-all duration-200 cursor-pointer"
+               class="bg-[#111827] rounded-2xl shadow-lg border border-gray-800 overflow-hidden hover:shadow-cyan-500/10 hover:border-cyan-500/30 transition-all duration-300 cursor-pointer group flex flex-col"
                @click="router.push(`/server/${server.server_id}`)">
             <!-- Card Header -->
-            <div class="px-6 py-4 border-b border-gray-50 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-700/50">
-              <div class="flex items-center gap-2">
-                <div>
-                  <h3 class="text-lg font-semibold text-gray-900 dark:text-white truncate" :title="server.server_id">{{ server.server_id }}</h3>
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-medium" v-if="server.group_name">{{ server.group_name }}</span>
+            <div class="px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/30">
+              <div class="flex items-center gap-3 overflow-hidden">
+                <div class="h-9 w-9 rounded-lg bg-gray-800 text-gray-400 group-hover:text-cyan-400 group-hover:bg-cyan-500/10 transition-colors flex items-center justify-center overflow-hidden">
+                   <img v-if="getServerOs(server) === 'linux'" src="../assets/linux-logo.png" class="w-full h-full object-cover" />
+                   <img v-else-if="getServerOs(server) === 'windows'" src="../assets/windows-logo.png" class="w-full h-full object-cover" />
+                   <svg v-else class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 01-2 2v4a2 2 0 012 2h14a2 2 0 012-2v-4a2 2 0 01-2-2m-2-4h.01M17 16h.01" />
+                   </svg>
+                </div>
+                <div class="min-w-0">
+                  <h3 class="text-sm font-bold text-gray-200 truncate group-hover:text-white transition-colors" :title="server.server_id">{{ server.server_id }}</h3>
+                  <div class="flex items-center gap-2 mt-0.5">
+                    <span class="text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700" v-if="server.group_name">{{ server.group_name }}</span>
+                    <span class="text-[10px] text-gray-500" v-else>No group</span>
+                  </div>
                 </div>
               </div>
               <div class="flex items-center gap-3">
-                 <!-- Export Actions -->
-                 <div class="flex gap-1">
-                    <button @click.stop="exportData('csv', server.server_id)" class="text-gray-400 hover:text-green-600 dark:hover:text-green-400 transition-colors" title="Export CSV">
-                      <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                    </button>
-                    <button @click.stop="exportData('json', server.server_id)" class="text-gray-400 hover:text-yellow-600 dark:hover:text-yellow-400 transition-colors" title="Export JSON">
-                      <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                      </svg>
-                    </button>
+                 <div class="relative flex h-3 w-3">
+                    <span v-if="metrics[server.server_id]" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-3 w-3" :class="metrics[server.server_id] ? 'bg-emerald-500' : 'bg-gray-600'"></span>
                  </div>
-                 <div class="h-2 w-2 rounded-full" :class="metrics[server.server_id] ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'"></div>
               </div>
             </div>
 
             <!-- Card Body -->
-            <div class="p-6 space-y-6" v-if="metrics[server.server_id]">
+            <div class="p-6 space-y-6 flex-1" v-if="metrics[server.server_id]">
               <!-- CPU -->
               <div v-if="visibleMetrics.cpu">
-                <div class="flex justify-between text-sm mb-1">
-                  <span class="text-gray-500 dark:text-gray-400">CPU Usage</span>
+                <div class="flex justify-between text-xs mb-2">
+                  <span class="text-gray-400 font-medium">CPU Usage</span>
                   <span class="flex items-center gap-2">
-                    <span class="font-medium" :class="metrics[server.server_id].latest.cpu.total > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
+                    <span class="font-bold" :class="metrics[server.server_id].latest.cpu.total > 90 ? 'text-red-400' : 'text-cyan-400'">
                       {{ metrics[server.server_id].latest.cpu.total.toFixed(1) }}%
-                    </span>
-                    <span
-                      v-if="metrics[server.server_id].latest.cpu.total > 90"
-                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                    >
-                      Alto
                     </span>
                   </span>
                 </div>
-                <div class="h-10">
+                <div class="h-12 relative">
                    <Line :data="getChartData(server.server_id, 'cpu')" :options="chartOptions" />
                 </div>
               </div>
 
               <!-- Memory -->
               <div v-if="visibleMetrics.memory">
-                <div class="flex justify-between text-sm mb-1">
-                  <span class="text-gray-500 dark:text-gray-400">Memory</span>
+                <div class="flex justify-between text-xs mb-2">
+                  <span class="text-gray-400 font-medium">Memory</span>
                   <span class="flex items-center gap-2">
-                    <span class="font-medium" :class="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
-                      {{ (metrics[server.server_id].latest.memory.used / 1024 / 1024 / 1024).toFixed(1) }} / 
-                      {{ (metrics[server.server_id].latest.memory.total / 1024 / 1024 / 1024).toFixed(1) }} GB
+                    <span class="font-bold" :class="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9 ? 'text-red-400' : 'text-emerald-400'">
+                      {{ (metrics[server.server_id].latest.memory.used / 1024 / 1024 / 1024).toFixed(1) }} GB
                     </span>
-                    <span
-                      v-if="(metrics[server.server_id].latest.memory.used / metrics[server.server_id].latest.memory.total) > 0.9"
-                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                    >
-                      Alto
-                    </span>
+                    <span class="text-gray-600">/</span>
+                    <span class="text-gray-500">{{ (metrics[server.server_id].latest.memory.total / 1024 / 1024 / 1024).toFixed(1) }} GB</span>
                   </span>
                 </div>
-                 <div class="h-10">
+                 <div class="h-12 relative">
                    <Line :data="getChartData(server.server_id, 'memory')" :options="chartOptions" />
                 </div>
               </div>
               
               <!-- Disk -->
               <div v-if="visibleMetrics.disk">
-                <div class="flex justify-between text-sm mb-1">
-                   <span class="text-gray-500 dark:text-gray-400">Disk</span>
-                   <span class="flex items-center gap-2">
-                     <span class="font-medium" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'">
-                       {{ metrics[server.server_id].latest.disk.percent }}%
-                     </span>
-                     <span
-                       v-if="metrics[server.server_id].latest.disk.percent > 90"
-                       class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                     >
-                       Alto
-                     </span>
+                <div class="flex justify-between text-xs mb-2">
+                   <span class="text-gray-400 font-medium">Disk</span>
+                   <span class="font-bold" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'text-red-400' : 'text-amber-400'">
+                     {{ metrics[server.server_id].latest.disk.percent }}%
                    </span>
                 </div>
-                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                  <div class="h-1.5 rounded-full" :class="metrics[server.server_id].latest.disk.percent > 90 ? 'bg-red-500' : 'bg-yellow-500'" :style="{ width: metrics[server.server_id].latest.disk.percent + '%' }"></div>
+                <div class="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                  <div class="h-full rounded-full transition-all duration-500" 
+                       :class="metrics[server.server_id].latest.disk.percent > 90 ? 'bg-red-500' : 'bg-amber-500'" 
+                       :style="{ width: metrics[server.server_id].latest.disk.percent + '%' }"></div>
                 </div>
               </div>
               
               <!-- Network -->
-              <div v-if="visibleMetrics.network">
-                <div class="flex justify-between text-sm mb-1">
-                  <span class="text-gray-500 dark:text-gray-400">Network</span>
-                  <span v-if="metrics[server.server_id].latest.network" class="font-medium text-gray-900 dark:text-gray-100">
-                    ▲ {{ formatBytes(metrics[server.server_id].latest.network.bytes_sent || 0) }}
-                    /
-                    ▼ {{ formatBytes(metrics[server.server_id].latest.network.bytes_recv || 0) }}
+              <div v-if="visibleMetrics.network" class="bg-gray-900/30 rounded-lg p-3 border border-gray-800">
+                <div class="flex justify-between items-center text-xs">
+                  <div class="flex items-center gap-2">
+                     <svg class="w-3 h-3 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+                     <span class="text-gray-400">Network I/O</span>
+                  </div>
+                  <span v-if="metrics[server.server_id].latest.network" class="font-mono text-gray-300">
+                    <span class="text-blue-400">↑</span> {{ formatBytes(metrics[server.server_id].latest.network.bytes_sent || 0) }}
+                    <span class="mx-1 text-gray-700">|</span>
+                    <span class="text-purple-400">↓</span> {{ formatBytes(metrics[server.server_id].latest.network.bytes_recv || 0) }}
                   </span>
-                  <span v-else class="font-medium text-gray-400 dark:text-gray-500">-</span>
+                  <span v-else class="text-gray-600">-</span>
                 </div>
-              </div>
-              
-              <!-- Footer Info -->
-              <div class="pt-4 border-t border-gray-50 dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500 flex justify-between items-center">
-                <span class="flex items-center gap-2">
-                  <span>Docker: {{ metrics[server.server_id].latest.docker.running_containers }} running</span>
-                  <span v-if="metrics[server.server_id].latest.uptime">· Uptime: {{ formatUptime(metrics[server.server_id].latest.uptime) }}</span>
-                </span>
-                <span>Last updated: {{ new Date(metrics[server.server_id].latest.ts).toLocaleTimeString() }}</span>
               </div>
             </div>
             
-            <div class="p-6 text-center text-gray-500 dark:text-gray-400 italic" v-else>
-              Waiting for data...
+            <!-- Footer Info -->
+            <div class="px-6 py-4 border-t border-gray-800 bg-gray-900/50 flex justify-between items-center text-[10px] text-gray-500">
+                <div class="flex items-center gap-3" v-if="metrics[server.server_id]">
+                  <span class="flex items-center gap-1.5">
+                    <svg class="w-3 h-3 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                    {{ metrics[server.server_id].latest.docker.running_containers }} containers
+                  </span>
+                  <span v-if="metrics[server.server_id].latest.uptime" class="flex items-center gap-1.5">
+                    <svg class="w-3 h-3 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    {{ formatUptime(metrics[server.server_id].latest.uptime) }}
+                  </span>
+                </div>
+                <div v-else class="italic">Offline</div>
+                
+                <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                   <button @click.stop="exportData('csv', server.server_id)" class="text-gray-500 hover:text-white" title="Export CSV">
+                     <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                   </button>
+                </div>
             </div>
           </div>
         </div>
@@ -598,64 +632,65 @@ const formatUptime = (seconds) => {
 
     <!-- Install Modal -->
     <div v-if="showInstallModal" class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-      <div class="fixed inset-0 bg-gray-900/50 dark:bg-black/70 backdrop-blur-sm transition-opacity" @click="showInstallModal = false"></div>
+      <div class="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity" @click="showInstallModal = false"></div>
 
       <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-        <div class="relative transform overflow-hidden rounded-2xl bg-white dark:bg-gray-800 text-left shadow-2xl ring-1 ring-black/5 transition-all sm:my-8 sm:w-full sm:max-w-lg border border-gray-100 dark:border-gray-700">
-          <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+        <div class="relative transform overflow-hidden rounded-2xl bg-[#1f2937] text-left shadow-2xl border border-gray-700 transition-all sm:my-8 sm:w-full sm:max-w-lg">
+          <div class="bg-[#1f2937] px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
             <div class="sm:flex sm:items-start">
-              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 sm:mx-0 sm:h-10 sm:w-10 text-indigo-600 dark:text-indigo-400">
+              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-xl bg-indigo-900/30 text-indigo-400 sm:mx-0 sm:h-10 sm:w-10">
                 <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
               </div>
               <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
-                <h3 class="text-lg leading-6 font-semibold text-gray-900 dark:text-white" id="modal-title">Instalar Agente</h3>
+                <h3 class="text-lg leading-6 font-bold text-white" id="modal-title">Install Agent</h3>
                 
-                <div class="flex space-x-2 mt-4 border-b border-gray-200 dark:border-gray-700">
+                <div class="flex space-x-2 mt-6 border-b border-gray-700">
                    <button 
                      @click="installOS = 'linux'"
-                     :class="[installOS === 'linux' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 hover:border-gray-300', 'whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors']"
+                     :class="[installOS === 'linux' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-600', 'whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors flex items-center gap-2']"
                    >
+                     <img src="../assets/linux-logo.png" class="w-5 h-5 object-contain" />
                      Linux / macOS
                    </button>
                    <button 
                      @click="installOS = 'windows'"
-                     :class="[installOS === 'windows' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 hover:border-gray-300', 'whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors']"
+                     :class="[installOS === 'windows' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-600', 'whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors flex items-center gap-2']"
                    >
+                     <img src="../assets/windows-logo.png" class="w-5 h-5 object-contain" />
                      Windows (PowerShell)
                    </button>
                 </div>
 
-                <div class="mt-4">
-                  <p class="text-sm text-gray-500 dark:text-gray-400 mb-2">
-                    Copia y pega este comando en tu terminal {{ installOS === 'windows' ? 'PowerShell' : 'Bash' }}:
+                <div class="mt-6">
+                  <p class="text-sm text-gray-400 mb-3">
+                    Copy and paste this command into your {{ installOS === 'windows' ? 'PowerShell' : 'terminal' }}:
                   </p>
-                  <div class="relative rounded-lg shadow-sm group">
-                    <div class="bg-gray-900 text-gray-100 p-3 rounded-lg text-sm font-mono break-all border border-gray-700 pr-10">
+                  <div class="relative rounded-lg shadow-lg group">
+                    <div class="bg-black text-gray-300 p-4 rounded-lg text-sm font-mono break-all border border-gray-800 pr-10">
                       {{ installCommand }}
                     </div>
-                    <button @click="copyInstallCommand" class="absolute right-2 top-2 text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors" title="Copiar">
+                    <button @click="copyInstallCommand" class="absolute right-2 top-2 text-gray-500 hover:text-white p-1.5 rounded hover:bg-gray-800 transition-colors" title="Copy">
                        <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                        </svg>
                     </button>
                   </div>
-                  <p class="mt-2 text-xs text-gray-400">
-                    <span v-if="installOS === 'windows'">Requiere Python instalado. Ejecutar en PowerShell.</span>
-                    <span v-else>Requiere Python 3 instalado.</span>
-                    El script detectará el sistema y configurará la persistencia automáticamente.
+                  <p class="mt-3 text-xs text-gray-500">
+                    <span v-if="installOS === 'windows'">Requires Python installed. Run in PowerShell as Administrator.</span>
+                    <span v-else>Requires Python 3 installed. Run with sudo if needed.</span>
                   </p>
                 </div>
               </div>
             </div>
           </div>
-          <div class="bg-gray-50 dark:bg-gray-700/30 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t border-gray-100 dark:border-gray-700">
-            <button type="button" class="w-full inline-flex justify-center rounded-xl border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm transition-colors" @click="copyInstallCommand">
-              Copiar Comando
+          <div class="bg-[#111827] px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t border-gray-700">
+            <button type="button" class="w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm transition-colors" @click="copyInstallCommand">
+              Copy Command
             </button>
-            <button type="button" class="mt-3 w-full inline-flex justify-center rounded-xl border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-800 text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition-colors" @click="showInstallModal = false">
-              Cerrar
+            <button type="button" class="mt-3 w-full inline-flex justify-center rounded-lg border border-gray-600 shadow-sm px-4 py-2 bg-gray-800 text-base font-medium text-gray-300 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition-colors" @click="showInstallModal = false">
+              Close
             </button>
           </div>
         </div>
@@ -663,3 +698,23 @@ const formatUptime = (seconds) => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #0b1120; 
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1f2937; 
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #374151; 
+}
+</style>
