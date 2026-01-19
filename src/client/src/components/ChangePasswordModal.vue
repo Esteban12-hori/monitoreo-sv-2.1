@@ -153,6 +153,7 @@ const submit = async () => {
                       :type="showConfirm ? 'text' : 'password'" 
                       class="block w-full rounded-lg border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 pr-10" 
                       required
+                      @input="error = ''"
                     >
                     <button
                       type="button"

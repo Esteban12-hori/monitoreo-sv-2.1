@@ -51,6 +51,41 @@ $BackendArgs = @(
 )
 Start-Process -FilePath $PythonExe -ArgumentList $BackendArgs -WorkingDirectory $RootDir
 
+# Esperar a que el backend inicie para registrar el servidor local
+Write-Host "Esperando 5 segundos para inicio del backend..." -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+
+# Auto-registrar servidor local
+$LocalServerId = "local-pc"
+$LocalToken = "local-token-secret"
+$AgentConfigPath = Join-Path $AgentDir "agent.config.json"
+
+Write-Host "Registrando '$LocalServerId' en el backend..." -ForegroundColor Yellow
+try {
+    $Body = @{
+        server_id = $LocalServerId
+        token = $LocalToken
+    } | ConvertTo-Json
+
+    Invoke-RestMethod -Uri "http://localhost:8000/api/register" -Method Post -Body $Body -ContentType "application/json"
+    Write-Host "Servidor registrado exitosamente." -ForegroundColor Green
+} catch {
+    Write-Host "No se pudo registrar el servidor (¿Backend no listo?): $_" -ForegroundColor Red
+}
+
+# Crear configuración del agente si no existe
+if (!(Test-Path $AgentConfigPath)) {
+    Write-Host "Creando configuración predeterminada para el agente ($AgentConfigPath)..." -ForegroundColor Yellow
+    $ConfigContent = @{
+        server = "http://localhost:8000"
+        server_id = $LocalServerId
+        token = $LocalToken
+        interval = 5
+        verify = "false"
+    } | ConvertTo-Json
+    Set-Content -Path $AgentConfigPath -Value $ConfigContent
+}
+
 if (-not $NoInstall) {
     Write-Host "Instalando dependencias del frontend (npm install)..." -ForegroundColor Yellow
     Push-Location $FrontendDir

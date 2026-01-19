@@ -56,6 +56,17 @@
       </div>
       
       <div class="w-full lg:w-auto flex items-center gap-3 bg-white dark:bg-gray-800 p-2 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+        <button 
+          @click="openConfigModal"
+          class="hidden sm:inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors shadow-sm"
+        >
+          <svg class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          Config
+        </button>
+        <div class="h-6 w-px bg-gray-300 dark:bg-gray-600 mx-1 hidden sm:block"></div>
         <label class="text-sm font-medium text-gray-700 dark:text-gray-300 pl-2 whitespace-nowrap">Rango:</label>
         <select 
           v-model="timeRange" 
@@ -85,7 +96,7 @@
     <!-- KPI Cards -->
     <div v-else-if="latestMetrics" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
       <!-- CPU Card -->
-      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden group hover:shadow-md transition-shadow">
+      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border relative overflow-hidden group hover:shadow-md transition-shadow" :class="getCardBorderClass(latestMetrics.cpu.total)">
         <div class="flex justify-between items-start mb-4">
           <div>
             <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">CPU</p>
@@ -104,7 +115,7 @@
       </div>
 
       <!-- Memory Card -->
-      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden group hover:shadow-md transition-shadow">
+      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border relative overflow-hidden group hover:shadow-md transition-shadow" :class="getCardBorderClass((latestMetrics.memory.used / latestMetrics.memory.total) * 100)">
         <div class="flex justify-between items-start mb-4">
           <div>
             <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Memoria</p>
@@ -123,7 +134,7 @@
       </div>
 
       <!-- Disk Card -->
-      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden group hover:shadow-md transition-shadow">
+      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border relative overflow-hidden group hover:shadow-md transition-shadow" :class="getCardBorderClass(latestMetrics.disk.percent, 80, 90)">
         <div class="flex justify-between items-start mb-4">
           <div>
             <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Disco</p>
@@ -169,6 +180,27 @@
           Total:
           {{ latestMetrics.network ? formatBytes((latestMetrics.network.bytes_sent || 0) + (latestMetrics.network.bytes_recv || 0)) : '0 Bytes' }}
         </p>
+      </div>
+
+      <!-- Redis Card -->
+      <div class="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border relative overflow-hidden group hover:shadow-md transition-shadow" :class="isRedisRunning ? 'border-red-500 dark:border-red-500' : 'border-gray-100 dark:border-gray-700'">
+        <div class="flex justify-between items-start mb-4">
+          <div>
+            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Redis</p>
+            <h3 class="text-2xl font-bold mt-1" :class="isRedisRunning ? 'text-gray-900 dark:text-white' : 'text-gray-400 dark:text-gray-500'">
+              {{ isRedisRunning ? 'Activo' : 'Inactivo' }}
+            </h3>
+          </div>
+          <div class="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-red-600 dark:text-red-400">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+        </div>
+        <div class="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-1.5 mb-2">
+          <div class="bg-red-500 h-1.5 rounded-full transition-all duration-500" :style="{ width: isRedisRunning ? '100%' : '0%' }"></div>
+        </div>
+        <p class="text-xs text-gray-500">{{ isRedisRunning ? 'Servicio detectado' : 'No detectado' }}</p>
       </div>
 
       <!-- Docker Card -->
@@ -492,6 +524,71 @@
         </table>
       </div>
     </div>
+
+    <!-- Configuration Modal -->
+    <div v-if="isConfigModalOpen" class="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-gray-900 bg-opacity-75 transition-opacity" aria-hidden="true" @click="isConfigModalOpen = false"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg w-full border border-gray-200 dark:border-gray-700">
+          <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+            <div class="sm:flex sm:items-start">
+              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-indigo-100 dark:bg-indigo-900/30 sm:mx-0 sm:h-10 sm:w-10">
+                <svg class="h-6 w-6 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </div>
+              <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
+                <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="modal-title">
+                  Configuración del Servidor
+                </h3>
+                <div class="mt-2">
+                  <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+                    Ajusta el intervalo de reporte para este servidor.
+                  </p>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Intervalo de Actualización</label>
+                    <select 
+                      v-model="tempInterval"
+                      class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md dark:bg-gray-700 dark:text-white"
+                    >
+                      <option v-for="opt in intervalOptions" :key="opt.value" :value="opt.value">
+                        {{ opt.label }}
+                      </option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Selecciona '0' para pausar el monitoreo.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="bg-gray-50 dark:bg-gray-700/50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+            <button 
+              type="button" 
+              class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50"
+              @click="saveInterval"
+              :disabled="savingInterval"
+            >
+              <svg v-if="savingInterval" class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              {{ savingInterval ? 'Guardando...' : 'Guardar Cambios' }}
+            </button>
+            <button 
+              type="button" 
+              class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-800 text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+              @click="isConfigModalOpen = false"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -540,9 +637,59 @@ const serverInfo = ref(null)
 const lastUpdate = ref('-')
 const isOnline = ref(false)
 const isLoading = ref(false)
+const isConfigModalOpen = ref(false)
+const tempInterval = ref(5)
+const savingInterval = ref(false)
 let pollTimer = null
 
 const isAdmin = computed(() => authStore.isAdmin)
+
+const isRedisRunning = computed(() => {
+  if (!latestMetrics.value || !latestMetrics.value.services) return false
+  const services = parseServices(latestMetrics.value.services)
+  return services.some(s => s.port === 6379 || (s.name && s.name.toLowerCase().includes('redis')))
+})
+
+const intervalOptions = [
+  { value: 0, label: 'Desactivado' },
+  { value: 5, label: 'Tiempo real (5s)' },
+  { value: 60, label: '1 minuto' },
+  { value: 300, label: '5 minutos' },
+  { value: 600, label: '10 minutos' },
+  { value: 1800, label: '30 minutos' },
+  { value: 3600, label: '60 minutos' },
+  { value: 5 * 3600, label: '5 horas' },
+  { value: 7 * 3600, label: '7 horas' },
+  { value: 8 * 3600, label: '8 horas' },
+  { value: 10 * 3600, label: '10 horas' },
+  { value: 24 * 3600, label: '24 horas' }
+]
+
+const openConfigModal = () => {
+  if (serverInfo.value) {
+    tempInterval.value = serverInfo.value.report_interval ?? 300
+    isConfigModalOpen.value = true
+  }
+}
+
+const saveInterval = async () => {
+  if (!serverInfo.value) return
+  savingInterval.value = true
+  try {
+    await axios.put(`${API_BASE}/api/admin/servers/${serverId}/config`, {
+      report_interval: parseInt(tempInterval.value)
+    }, { headers: authStore.getHeaders() })
+    
+    serverInfo.value.report_interval = parseInt(tempInterval.value)
+    alert('Intervalo actualizado correctamente.')
+    isConfigModalOpen.value = false
+  } catch (e) {
+    console.error(e)
+    alert('Error al actualizar intervalo: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    savingInterval.value = false
+  }
+}
 
 const copyServiceEndpoint = async (svc) => {
   const text = `${svc.ip || '*'}:${svc.port}/${svc.proto || 'tcp'}`
@@ -577,12 +724,15 @@ const chartOptions = {
       display: false
     },
     tooltip: {
-      backgroundColor: 'rgba(17, 24, 39, 0.9)',
+      backgroundColor: 'rgba(17, 24, 39, 0.95)',
       titleColor: '#f3f4f6',
       bodyColor: '#e5e7eb',
-      padding: 10,
-      cornerRadius: 6,
-      displayColors: false,
+      borderColor: 'rgba(75, 85, 99, 0.4)',
+      borderWidth: 1,
+      padding: 12,
+      cornerRadius: 8,
+      displayColors: true,
+      boxPadding: 4,
       callbacks: {
         label: (context) => {
           const val = context.parsed.y.toFixed(2)
@@ -595,19 +745,38 @@ const chartOptions = {
   scales: {
     y: {
       beginAtZero: true,
-      grid: { color: 'rgba(156, 163, 175, 0.1)' },
-      ticks: { color: '#9ca3af', font: { size: 10 } },
+      grid: { 
+        color: 'rgba(156, 163, 175, 0.05)',
+        drawBorder: false 
+      },
+      ticks: { 
+        color: '#9ca3af', 
+        font: { size: 10, family: "'Inter', sans-serif" },
+        padding: 8
+      },
       border: { display: false }
     },
     x: {
       grid: { display: false },
       ticks: { 
         color: '#9ca3af',
-        maxTicksLimit: 6,
-        font: { size: 10 },
-        maxRotation: 0
+        maxTicksLimit: 8,
+        font: { size: 10, family: "'Inter', sans-serif" },
+        maxRotation: 0,
+        padding: 8
       },
       border: { display: false }
+    }
+  },
+  elements: {
+    line: {
+      tension: 0.4, // Smooth curves
+      borderWidth: 2
+    },
+    point: {
+      radius: 0,
+      hitRadius: 10,
+      hoverRadius: 4
     }
   }
 }
@@ -703,6 +872,12 @@ const getProtoBadgeClasses = (proto) => {
     return 'bg-sky-50 text-sky-800 dark:bg-sky-900/40 dark:text-sky-100 border-sky-200 dark:border-sky-700'
   }
   return 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-100 border-blue-200 dark:border-blue-700'
+}
+
+const getCardBorderClass = (val, warning = 75, critical = 90) => {
+  if (val >= critical) return 'border-red-500 dark:border-red-500'
+  if (val >= warning) return 'border-amber-500 dark:border-amber-500'
+  return 'border-gray-100 dark:border-gray-700'
 }
 
 const getIpBadgeClasses = (ip) => {
