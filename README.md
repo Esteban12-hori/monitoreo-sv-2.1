@@ -83,7 +83,54 @@ docker run -d \
 
 ---
 
-## 🔧 Instalación Manual (Desarrollo)
+## � Despliegue Manual en Linux (Frontend con Nginx)
+
+Si prefieres no usar Docker y quieres servir el frontend en el puerto 80 usando Nginx directamente:
+
+1. **Construir el proyecto**:
+   ```bash
+   cd src/client
+   npm install
+   npm run build
+   ```
+   Esto generará la carpeta `dist` con los archivos estáticos.
+
+2. **Configurar Nginx**:
+   Instala Nginx (`sudo apt install nginx`) y edita la configuración:
+   ```bash
+   sudo nano /etc/nginx/sites-available/default
+   ```
+
+   Usa esta configuración (ajusta la ruta `root` a donde esté tu carpeta `dist`):
+   ```nginx
+   server {
+       listen 80;
+       server_name _;  # O tu dominio/IP
+
+       root /home/usuario/monitoreo-sv-2.1/src/client/dist;
+       index index.html;
+
+       location / {
+           try_files $uri $uri/ /index.html;
+       }
+
+       # Proxy para conectar con el Backend
+       location /api/ {
+           proxy_pass http://localhost:8000/api/;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+       }
+   }
+   ```
+
+3. **Reiniciar Nginx**:
+   ```bash
+   sudo systemctl restart nginx
+   ```
+
+---
+
+## �🔧 Instalación Manual (Desarrollo)
 
 Si prefieres ejecutarlo localmente sin Docker para desarrollo.
 
