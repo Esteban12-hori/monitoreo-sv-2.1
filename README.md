@@ -1,5 +1,9 @@
 # 📊 UpKeep
 
+<div align="center">
+  <img src="src/client/src/assets/logo.png" alt="UpKeep Logo" width="120" />
+</div>
+
 Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. Diseñado para proporcionar visibilidad completa sobre tu infraestructura con una experiencia de usuario intuitiva.
 
 ## 🚀 Características Principales
