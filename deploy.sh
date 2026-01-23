@@ -45,11 +45,11 @@ npm run build > /dev/null
 
 # 4. Iniciar Servidor
 echo -e "${GREEN}✅ Todo listo.${NC}"
-echo -e "${GREEN}🚀 Iniciando servidor en http://localhost:8000${NC}"
+echo -e "${GREEN}🚀 Iniciando servidor en http://localhost:8001${NC}"
 cd ../server
 
 # Usamos nohup para que siga corriendo si se cierra la terminal (opcional, pero util para despliegue basico)
 # Pero como dice "ejecuta", lo haremos en foreground para que el usuario vea los logs.
 # Asegurar PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:$(pwd)/../..
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001

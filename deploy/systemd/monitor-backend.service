@@ -3,13 +3,12 @@ Description=UpKeep Backend
 After=network.target
 
 [Service]
-# Ajustar usuario/grupo según corresponda (ej: ubuntu, ec2-user, www-data)
-User=ubuntu
-Group=ubuntu
-WorkingDirectory=/opt/monitor
-Environment="PATH=/opt/monitor/.venv/bin"
-EnvironmentFile=/opt/monitor/.env
-ExecStart=/opt/monitor/.venv/bin/python -m uvicorn src.server.app.main:app --host 0.0.0.0 --port 8000
+User=azureuser
+Group=azureuser
+WorkingDirectory=/opt/monitoreo-sv-2.1
+Environment="PATH=/opt/monitoreo-sv-2.1/src/server/.venv/bin"
+# EnvironmentFile=/opt/monitoreo-sv-2.1/.env
+ExecStart=/opt/monitoreo-sv-2.1/src/server/.venv/bin/python -m uvicorn src.server.app.main:app --host 0.0.0.0 --port 8001
 Restart=always
 
 [Install]

@@ -475,14 +475,11 @@ onUnmounted(() => {
 
           <!-- RAM Chart -->
           <div class="bg-[#111827] rounded-2xl p-6 border border-gray-800 shadow-xl relative overflow-hidden group">
-            <div class="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-               <svg class="w-32 h-32 text-emerald-500" fill="currentColor" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>
-            </div>
             <div class="relative z-10">
               <h3 class="text-lg font-semibold text-gray-100 flex items-center gap-2 mb-4">
                 <span class="w-1 h-6 bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.5)]"></span>
                 RAM Usage
-                <span class="text-xs font-normal text-gray-500 ml-auto">LPS</span>
+                <span class="text-xs font-normal text-gray-500 ml-auto">Real time</span>
               </h3>
               <div class="h-64">
                 <Line v-if="chartDataMem" :data="chartDataMem" :options="chartOptions" />

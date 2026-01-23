@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import create_engine, select, delete, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from passlib.context import CryptContext
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -20,17 +20,19 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
     ServerConfigUpdateSchema, AlertRecipientSchema, AlertRecipientCreateSchema,
     ServerAssignmentSchema, AlertRuleCreate, AlertRuleResponse, ServerUpdateGroupSchema,
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
-    UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse
+    UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse,
+    UserGroupCreate, UserGroupResponse, UserGroupUpdate, NotificationRuleCreate, NotificationRuleResponse,
+    AlertPreviewRequest, AlertPreviewResponse
 )
 from .email_utils import send_alert_email
-from .alert_logic import get_alert_recipients, check_advanced_rules
+from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
 from .security import encrypt_password, decrypt_password
 import smtplib
 from email.mime.text import MIMEText
@@ -975,32 +977,58 @@ def metrics_history(
             # Aplicar limite siempre por seguridad/paginación
             q = q.limit(limit)
             
+            # Optimización: No cargar columnas pesadas (JSON) por defecto
+            # Se cargarán automáticamente (lazy load) SOLO si se accede a ellas (para el último item)
+            q = q.options(
+                defer(Metric.cpu_per_core),
+                defer(Metric.docker_containers),
+                defer(Metric.services),
+                defer(Metric.processes)
+            )
+            
             rows = sess.execute(q).scalars().all()
             rows = list(reversed(rows))
-            def row_to_dict(r: Metric):
-                return {
-                    "server_id": r.server_id,
+            
+            def row_to_dict(r: Metric, include_details: bool = False):
+                base = {
                     "ts": str(r.ts),
-                    "memory": {"total": r.mem_total, "used": r.mem_used, "free": r.mem_free, "cache": r.mem_cache},
-                    "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
-                    "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
-                    "network": {
-                        "bytes_sent": r.net_bytes_sent, 
-                        "bytes_recv": r.net_bytes_recv,
-                        "sent_rate": getattr(r, "net_sent_rate", 0.0),
-                        "recv_rate": getattr(r, "net_recv_rate", 0.0)
-                    },
-                    "uptime": r.uptime_seconds,
-                    "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
-                    "services": json.loads(r.services or "[]"),
-                    "processes": json.loads(r.processes or "[]"),
+                    "memory": {"used": r.mem_used, "total": r.mem_total},
+                    "cpu": {"total": r.cpu_total},
+                    "disk": {"percent": r.disk_percent},
                 }
-            data = [row_to_dict(r) for r in rows]
+                
+                if include_details:
+                    base.update({
+                        "server_id": r.server_id,
+                        "memory": {"total": r.mem_total, "used": r.mem_used, "free": r.mem_free, "cache": r.mem_cache},
+                        "cpu": {"total": r.cpu_total, "per_core": json.loads(r.cpu_per_core or "[]")},
+                        "disk": {"total": r.disk_total, "used": r.disk_used, "free": r.disk_free, "percent": r.disk_percent},
+                        "network": {
+                            "bytes_sent": r.net_bytes_sent, 
+                            "bytes_recv": r.net_bytes_recv,
+                            "sent_rate": getattr(r, "net_sent_rate", 0.0),
+                            "recv_rate": getattr(r, "net_recv_rate", 0.0)
+                        },
+                        "uptime": r.uptime_seconds,
+                        "docker": {"running_containers": r.docker_running, "containers": json.loads(r.docker_containers or "[]")},
+                        "services": json.loads(r.services or "[]"),
+                        "processes": json.loads(r.processes or "[]"),
+                    })
+                return base
+            
+            data = []
+            for i, r in enumerate(rows):
+                # Include details only for the last item (most recent)
+                is_last = (i == len(rows) - 1)
+                data.append(row_to_dict(r, include_details=is_last))
+                
             if server_id:
                 _cache[server_id] = data[-CACHE_MAX_ITEMS:]
             return data
-        except Exception:
-            raise HTTPException(status_code=500, detail="Error consultando historial")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Error consultando historial: {str(e)}")
 
 
 @app.get("/api/alerts")
@@ -1166,6 +1194,162 @@ def export_metrics(
             return data
             
     raise HTTPException(status_code=400, detail="Invalid format. Use 'csv' or 'json'.")
+
+# --- User Groups Management ---
+
+@app.get("/api/admin/groups", response_model=List[UserGroupResponse])
+def list_user_groups(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        groups = sess.execute(select(UserGroup)).scalars().all()
+        res = []
+        for g in groups:
+            user_ids = [u.id for u in g.users]
+            res.append(UserGroupResponse(
+                id=g.id,
+                name=g.name,
+                description=g.description,
+                created_at=g.created_at,
+                user_count=len(g.users),
+                user_ids=user_ids
+            ))
+        return res
+
+@app.post("/api/admin/groups", response_model=UserGroupResponse)
+def create_user_group(payload: UserGroupCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        existing = sess.execute(select(UserGroup).where(UserGroup.name == payload.name)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="Group name already exists")
+        
+        new_group = UserGroup(
+            name=payload.name,
+            description=payload.description
+        )
+        
+        if payload.user_ids:
+            users = sess.execute(select(User).where(User.id.in_(payload.user_ids))).scalars().all()
+            new_group.users = users
+            
+        sess.add(new_group)
+        sess.commit()
+        sess.refresh(new_group)
+        
+        return UserGroupResponse(
+            id=new_group.id,
+            name=new_group.name,
+            description=new_group.description,
+            created_at=new_group.created_at,
+            user_count=len(new_group.users),
+            user_ids=[u.id for u in new_group.users]
+        )
+
+@app.put("/api/admin/groups/{group_id}", response_model=UserGroupResponse)
+def update_user_group(group_id: int, payload: UserGroupUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        group = sess.get(UserGroup, group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+            
+        if payload.name:
+            if payload.name != group.name:
+                 existing = sess.execute(select(UserGroup).where(UserGroup.name == payload.name)).scalar_one_or_none()
+                 if existing:
+                     raise HTTPException(status_code=400, detail="Group name already exists")
+            group.name = payload.name
+            
+        if payload.description is not None:
+            group.description = payload.description
+            
+        if payload.user_ids is not None:
+            users = sess.execute(select(User).where(User.id.in_(payload.user_ids))).scalars().all()
+            group.users = users
+            
+        sess.commit()
+        sess.refresh(group)
+        
+        return UserGroupResponse(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            created_at=group.created_at,
+            user_count=len(group.users),
+            user_ids=[u.id for u in group.users]
+        )
+
+@app.delete("/api/admin/groups/{group_id}")
+def delete_user_group(group_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        group = sess.get(UserGroup, group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        sess.delete(group)
+        sess.commit()
+        return {"status": "deleted"}
+
+
+# --- Notification Rules Management ---
+
+@app.get("/api/admin/notification-rules", response_model=List[NotificationRuleResponse])
+def list_notification_rules(
+    user_id: Optional[int] = None, 
+    group_id: Optional[int] = None,
+    user: dict = Depends(require_admin)
+):
+    with Session(engine) as sess:
+        q = select(NotificationRule)
+        if user_id:
+            q = q.where(NotificationRule.user_id == user_id)
+        if group_id:
+            q = q.where(NotificationRule.group_id == group_id)
+        
+        rules = sess.execute(q).scalars().all()
+        return rules
+
+@app.post("/api/admin/notification-rules", response_model=NotificationRuleResponse)
+def create_notification_rule(payload: NotificationRuleCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        q = select(NotificationRule).where(
+            NotificationRule.action == payload.action,
+            NotificationRule.server_id == payload.server_id
+        )
+        if payload.user_id:
+            q = q.where(NotificationRule.user_id == payload.user_id)
+        elif payload.group_id:
+            q = q.where(NotificationRule.group_id == payload.group_id)
+        else:
+             raise HTTPException(status_code=400, detail="Must specify user_id or group_id")
+             
+        existing = sess.execute(q).scalar_one_or_none()
+        if existing:
+            return existing
+
+        new_rule = NotificationRule(
+            user_id=payload.user_id,
+            group_id=payload.group_id,
+            server_id=payload.server_id,
+            action=payload.action
+        )
+        sess.add(new_rule)
+        sess.commit()
+        sess.refresh(new_rule)
+        return new_rule
+
+@app.delete("/api/admin/notification-rules/{rule_id}")
+def delete_notification_rule(rule_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        rule = sess.get(NotificationRule, rule_id)
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        sess.delete(rule)
+        sess.commit()
+        return {"status": "deleted"}
+
+@app.post("/api/admin/alert-preview", response_model=AlertPreviewResponse)
+def preview_alert_decision(payload: AlertPreviewRequest, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        result = explain_alert_decision(sess, payload.user_id, payload.server_id)
+        return AlertPreviewResponse(**result)
+
 
 # --- Servir Frontend ---
 frontend_path = Path(__file__).resolve().parent.parent.parent / "frontend"

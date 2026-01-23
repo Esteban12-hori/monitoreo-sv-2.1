@@ -1,3 +1,4 @@
+
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Table
 from sqlalchemy.orm import declarative_base, relationship, backref
 from sqlalchemy.sql import func
@@ -98,6 +99,35 @@ class AlertRecipient(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+# --- User Management Extensions (Groups & Rules) ---
+
+user_group_association = Table('user_group_association', Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id')),
+    Column('group_id', Integer, ForeignKey('user_groups.id'))
+)
+
+class UserGroup(Base):
+    __tablename__ = 'user_groups'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    users = relationship("User", secondary=user_group_association, back_populates="groups")
+
+
+class NotificationRule(Base):
+    __tablename__ = 'notification_rules'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    group_id = Column(Integer, ForeignKey('user_groups.id'), nullable=True)
+    server_id = Column(String(255), nullable=True) # If Null -> Global/All Servers
+    action = Column(String(20), nullable=False, default='ALLOW') # ALLOW / BLOCK
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", backref="notification_rules")
+    group = relationship("UserGroup", backref="notification_rules")
+
 
 class User(Base):
     __tablename__ = "users"
@@ -106,7 +136,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     name = Column(String(255), nullable=True)
     is_admin = Column(Boolean, default=False)
-    receive_alerts = Column(Boolean, default=False) # Nuevo campo
+    receive_alerts = Column(Boolean, default=False) # Master switch
     must_change_password = Column(Boolean, default=False)
     is_blocked = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -114,6 +144,9 @@ class User(Base):
     # Relación Many-to-Many con Server
     server_links = relationship("UserServerLink", back_populates="user", cascade="all, delete-orphan")
     servers = relationship("Server", secondary="user_server_link", viewonly=True)
+    
+    # Groups
+    groups = relationship("UserGroup", secondary=user_group_association, back_populates="users")
 
 
 class SMTPConfig(Base):

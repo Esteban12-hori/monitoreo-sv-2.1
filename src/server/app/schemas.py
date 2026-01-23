@@ -1,87 +1,13 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
-class MemorySchema(BaseModel):
-    total: float
-    used: float
-    free: float
-    cache: float
-
-
-class CpuSchema(BaseModel):
-    total: float
-    per_core: List[float]
-
-
-class DiskSchema(BaseModel):
-    total: float
-    used: float
-    free: float
-    percent: float
-
-
-class NetworkSchema(BaseModel):
-    bytes_sent: float
-    bytes_recv: float
-    packets_sent: float
-    packets_recv: float
-    sent_rate: Optional[float] = 0.0
-    recv_rate: Optional[float] = 0.0
-
-
-class DockerContainerSchema(BaseModel):
-    name: str
-    cpu: Optional[float] = None
-    mem: Optional[float] = None
-
-
-class DockerSchema(BaseModel):
-    running_containers: int
-    containers: List[DockerContainerSchema] = []
-
-class ServiceSchema(BaseModel):
-    port: int
-    name: str
-    proto: str
-    ip: Optional[str] = None
-
-class ProcessSchema(BaseModel):
-    pid: int
-    name: str
-    username: str
-    cpu_percent: float
-    memory_percent: float
-    status: str
-
-class MetricsIngestSchema(BaseModel):
-    server_id: str
-    memory: MemorySchema
-    cpu: CpuSchema
-    disk: DiskSchema
-    network: Optional[NetworkSchema] = None
-    uptime: Optional[float] = None
-    docker: DockerSchema
-    services: Optional[List[ServiceSchema]] = []
-    processes: Optional[List[ProcessSchema]] = []
-    timestamp: Optional[str] = None
-
-
-
-class RegisterServerSchema(BaseModel):
-    server_id: str = Field(..., min_length=1)
-    token: str = Field(..., min_length=8)
-
-
-class AlertConfigSchema(BaseModel):
-    cpu_total_percent: float
-    memory_used_percent: float
-    disk_used_percent: float
-
-class LoginSchema(BaseModel):
-    email: str
-    password: str
+class TokenData(BaseModel):
+    email: Optional[str] = None
 
 class UserCreateSchema(BaseModel):
     email: EmailStr
@@ -112,6 +38,102 @@ class UserResponseSchema(BaseModel):
     class Config:
         from_attributes = True
 
+# --- Missing Schemas Added ---
+
+class RegisterServerSchema(BaseModel):
+    server_id: str
+    token: str
+
+class AlertConfigSchema(BaseModel):
+    cpu_total_percent: float = Field(..., ge=0.0, le=100.0)
+    memory_used_percent: float = Field(..., ge=0.0, le=100.0)
+    disk_used_percent: float = Field(..., ge=0.0, le=100.0)
+
+class LoginSchema(BaseModel):
+    email: str
+    password: str
+
+class ChangePasswordSchema(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=6)
+
+class ServerConfigUpdateSchema(BaseModel):
+    report_interval: int = Field(..., ge=0)
+
+class AlertRecipientCreateSchema(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+    recipient_type: str = "OTROS"
+
+
+# --- Metrics Schemas ---
+
+class MetricsCPU(BaseModel):
+    total: float
+    per_core: List[float]
+
+class MetricsMemory(BaseModel):
+    total: int
+    used: int
+    free: int
+    cache: int
+
+class MetricsDisk(BaseModel):
+    total: int
+    used: int
+    free: int
+    percent: float
+
+class MetricsNetwork(BaseModel):
+    bytes_sent: int
+    bytes_recv: int
+    sent_rate: Optional[float] = None
+    recv_rate: Optional[float] = None
+
+class MetricsContainer(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    image: Optional[str] = None
+    status: Optional[str] = None
+    created: Optional[str] = None
+    ports: Optional[str] = None
+    state: Optional[str] = None
+    
+    class Config:
+        extra = "allow"
+
+class MetricsDocker(BaseModel):
+    running_containers: int
+    containers: List[MetricsContainer] = []
+
+class MetricsService(BaseModel):
+    name: str
+    status: str
+    
+    class Config:
+        extra = "allow"
+
+class MetricsProcess(BaseModel):
+    pid: int
+    name: str
+    username: Optional[str] = None
+    cpu_percent: Optional[float] = None
+    memory_percent: Optional[float] = None
+    
+    class Config:
+        extra = "allow"
+
+class MetricsIngestSchema(BaseModel):
+    server_id: str
+    cpu: MetricsCPU
+    memory: MetricsMemory
+    disk: MetricsDisk
+    network: Optional[MetricsNetwork] = None
+    uptime: Optional[float] = None
+    docker: MetricsDocker
+    services: Optional[List[MetricsService]] = None
+    processes: Optional[List[MetricsProcess]] = None
+
 class ServerAssignmentItem(BaseModel):
     server_id: str
     receive_alerts: bool = True
@@ -122,51 +144,19 @@ class ServerAssignmentSchema(BaseModel):
 class UserServerAssignmentResponse(BaseModel):
     server_id: str
     receive_alerts: bool
-
-class ChangePasswordSchema(BaseModel):
-    current_password: str
-    new_password: str = Field(..., min_length=12)
-
-class SMTPConfigSchema(BaseModel):
-    host: str
-    port: int
-    username: str
-    password: Optional[str] = None # Plain text in request, encrypted in DB
-    use_ssl: bool = False
-    use_tls: bool = True
-    sender_email: EmailStr
-
-class SMTPConfigResponse(BaseModel):
-    host: str
-    port: int
-    username: str
-    use_ssl: bool
-    use_tls: bool
-    sender_email: str
-    updated_at: Optional[datetime]
     
     class Config:
         from_attributes = True
-
-class ServerConfigUpdateSchema(BaseModel):
-    report_interval: int = Field(..., ge=0, le=86400) # 0s to 24h
-
 
 class AlertRecipientSchema(BaseModel):
     id: int
     email: str
     name: Optional[str]
-    recipient_type: Optional[str] = "OTROS"
+    recipient_type: str
     created_at: Optional[datetime]
 
     class Config:
         from_attributes = True
-
-class AlertRecipientCreateSchema(BaseModel):
-    email: EmailStr
-    name: Optional[str] = None
-    recipient_type: Optional[str] = "OTROS"
-
 
 class AlertRuleBase(BaseModel):
     alert_type: str
@@ -194,11 +184,17 @@ class AlertRuleResponse(AlertRuleBase):
 class ServerUpdateGroupSchema(BaseModel):
     group_name: Optional[str]
 
-
 class ServerThresholdBase(BaseModel):
     cpu_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
     memory_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
     disk_threshold: Optional[float] = Field(None, ge=0.1, le=100.0)
+
+class ServerThresholdResponse(ServerThresholdBase):
+    id: int
+    server_id: str
+    
+    class Config:
+        from_attributes = True
 
 class ServerThresholdUpdate(ServerThresholdBase):
     pass
@@ -206,10 +202,51 @@ class ServerThresholdUpdate(ServerThresholdBase):
 class ServerThresholdImport(ServerThresholdBase):
     server_id: str
 
-class ServerThresholdResponse(ServerThresholdBase):
+class UserGroupBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class UserGroupCreate(UserGroupBase):
+    user_ids: List[int] = []
+
+class UserGroupUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    user_ids: Optional[List[int]] = None
+
+class UserGroupResponse(UserGroupBase):
+    id: int
+    created_at: Optional[datetime]
+    user_count: int = 0
+    user_ids: List[int] = []
+
+    class Config:
+        from_attributes = True
+
+class NotificationRuleBase(BaseModel):
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    server_id: Optional[str] = None # None means Global
+    action: str = Field(..., pattern="^(ALLOW|BLOCK)$")
+
+class NotificationRuleCreate(NotificationRuleBase):
+    pass
+
+# --- Alert Preview Schemas ---
+
+class AlertPreviewRequest(BaseModel):
+    user_id: int
     server_id: str
-    updated_at: Optional[datetime]
-    
+
+class AlertPreviewResponse(BaseModel):
+    decision: bool
+    reason: str
+    trace: List[str]
+
+class NotificationRuleResponse(NotificationRuleBase):
+    id: int
+    created_at: Optional[datetime]
+
     class Config:
         from_attributes = True
 
@@ -225,13 +262,11 @@ class AuditLogResponse(BaseModel):
     class Config:
         from_attributes = True
 
-
 class RemoteActionCreate(BaseModel):
     port: int
     proto: str
     ip: Optional[str] = None
     service: Optional[str] = None
-
 
 class RemoteActionResponse(BaseModel):
     id: int
@@ -243,5 +278,21 @@ class RemoteActionResponse(BaseModel):
     executed_at: Optional[datetime]
     requested_by: str
 
+    class Config:
+        from_attributes = True
+
+class SMTPConfigSchema(BaseModel):
+    host: str
+    port: int
+    username: str
+    password: Optional[str] = None
+    use_ssl: bool
+    use_tls: bool
+    sender_email: str
+
+class SMTPConfigResponse(SMTPConfigSchema):
+    id: int
+    updated_at: Optional[datetime]
+    
     class Config:
         from_attributes = True
