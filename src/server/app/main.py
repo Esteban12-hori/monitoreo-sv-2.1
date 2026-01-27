@@ -20,7 +20,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule, UserServerThreshold
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -29,7 +29,8 @@ from .schemas import (
     ServerThresholdResponse, ServerThresholdUpdate, AuditLogResponse, ServerThresholdImport,
     UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse,
     UserGroupCreate, UserGroupResponse, UserGroupUpdate, NotificationRuleCreate, NotificationRuleResponse,
-    AlertPreviewRequest, AlertPreviewResponse
+    AlertPreviewRequest, AlertPreviewResponse, UserServerThresholdResponse, UserServerThresholdUpdate,
+    ServerSubscriptionUpdate
 )
 from .email_utils import send_alert_email
 from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
@@ -42,6 +43,18 @@ import logging
 
 # Configuración de Passlib para hashing de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- Logging Configuration ---
+LOG_FILE = BASE_DIR / "server.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -208,6 +221,19 @@ def ensure_user_blocked_column():
                 print(f"Error migrando users.is_blocked: {e}")
                 sess.rollback()
 
+def ensure_user_notification_columns():
+    with Session(engine) as sess:
+        try:
+            sess.execute(select(User.phone_number).limit(1))
+        except Exception:
+            try:
+                sess.execute(text("ALTER TABLE users ADD COLUMN phone_number VARCHAR(50)"))
+                sess.execute(text("ALTER TABLE users ADD COLUMN webhook_url VARCHAR(500)"))
+                sess.commit()
+            except Exception as e:
+                print(f"Error migrando users.phone_number/webhook_url: {e}")
+                sess.rollback()
+
 @app.on_event("startup")
 def startup():
     # Usar un lock o simplemente un try-except robusto
@@ -215,6 +241,7 @@ def startup():
         ensure_recipient_type_column()
         ensure_link_column()
         ensure_user_blocked_column()
+        ensure_user_notification_columns()
         with Session(engine) as sess:
             ensure_default_alerts(sess)
     except Exception as e:
@@ -772,6 +799,156 @@ def import_thresholds(payload: List[ServerThresholdImport], user: dict = Depends
         sess.commit()
         return {"status": "imported", "count": count}
 
+# --- User Personal Thresholds ---
+
+@app.get("/api/servers/{server_id}/thresholds/me", response_model=UserServerThresholdResponse)
+def get_my_server_threshold(server_id: str, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        # Get Server PK for Link check
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        
+        # Get Subscription Status
+        receive_alerts = True
+        if srv:
+            link = sess.execute(
+                select(UserServerLink)
+                .where(UserServerLink.user_id == user["user_id"])
+                .where(UserServerLink.server_id == srv.id)
+            ).scalar_one_or_none()
+            if link:
+                receive_alerts = link.receive_alerts
+
+        # Get Thresholds
+        t = sess.execute(
+            select(UserServerThreshold)
+            .where(UserServerThreshold.server_id == server_id)
+            .where(UserServerThreshold.user_id == user["user_id"])
+        ).scalar_one_or_none()
+        
+        if not t:
+            return UserServerThresholdResponse(
+                server_id=server_id,
+                user_id=user["user_id"],
+                cpu_limit=None,
+                mem_limit=None,
+                disk_limit=None,
+                created_at=None,
+                updated_at=None,
+                id=0,
+                receive_alerts=receive_alerts
+            )
+            
+        return UserServerThresholdResponse(
+            id=t.id,
+            user_id=t.user_id,
+            server_id=t.server_id,
+            cpu_limit=t.cpu_limit,
+            mem_limit=t.mem_limit,
+            disk_limit=t.disk_limit,
+            created_at=t.created_at,
+            updated_at=t.updated_at,
+            receive_alerts=receive_alerts
+        )
+
+@app.put("/api/servers/{server_id}/thresholds/me", response_model=UserServerThresholdResponse)
+def update_my_server_threshold(server_id: str, payload: UserServerThresholdUpdate, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        # Verify server exists
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Server not found")
+
+        # Get Subscription Status (read-only here, updated via separate endpoint)
+        receive_alerts = True
+        link = sess.execute(
+            select(UserServerLink)
+            .where(UserServerLink.user_id == user["user_id"])
+            .where(UserServerLink.server_id == srv.id)
+        ).scalar_one_or_none()
+        if link:
+            receive_alerts = link.receive_alerts
+
+        if not user["is_admin"]:
+             if not link:
+                 # Implicit permission check: if no link and not admin, technically they shouldn't be editing?
+                 # But we allow creating thresholds.
+                 pass
+
+        t = sess.execute(
+            select(UserServerThreshold)
+            .where(UserServerThreshold.server_id == server_id)
+            .where(UserServerThreshold.user_id == user["user_id"])
+        ).scalar_one_or_none()
+        
+        if not t:
+            t = UserServerThreshold(
+                server_id=server_id,
+                user_id=user["user_id"]
+            )
+            sess.add(t)
+        
+        # Use exclude_unset to distinguish between missing (ignore) and None (clear)
+        update_data = payload.dict(exclude_unset=True)
+        
+        if "cpu_limit" in update_data:
+            t.cpu_limit = update_data["cpu_limit"]
+        if "mem_limit" in update_data:
+            t.mem_limit = update_data["mem_limit"]
+        if "disk_limit" in update_data:
+            t.disk_limit = update_data["disk_limit"]
+            
+        t.updated_at = datetime.now(timezone.utc)
+        
+        sess.commit()
+        sess.refresh(t)
+        
+        return UserServerThresholdResponse(
+            id=t.id,
+            user_id=t.user_id,
+            server_id=t.server_id,
+            cpu_limit=t.cpu_limit,
+            mem_limit=t.mem_limit,
+            disk_limit=t.disk_limit,
+            created_at=t.created_at,
+            updated_at=t.updated_at,
+            receive_alerts=receive_alerts
+        )
+
+@app.put("/api/servers/{server_id}/subscription")
+def update_server_subscription(server_id: str, payload: ServerSubscriptionUpdate, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        # Verify server exists
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Server not found")
+            
+        # Check/Create Link
+        link = sess.execute(
+            select(UserServerLink)
+            .where(UserServerLink.user_id == user["user_id"])
+            .where(UserServerLink.server_id == srv.id)
+        ).scalar_one_or_none()
+        
+        if not link:
+            # If link doesn't exist, create it? 
+            # If users are strictly managed, maybe not. 
+            # But for "Personalization", allowing them to subscribe if they have access (which we assume if they know the ID or we should check visibility)
+            # For now, let's assume if they can call this, they want to track it.
+            # However, list_servers logic restricts what they see.
+            # If they are admin, they see all. If not, they see assigned.
+            # If not assigned, they shouldn't be able to subscribe?
+            if not user["is_admin"]:
+                 raise HTTPException(status_code=403, detail="Server not assigned to user")
+            else:
+                # Admin can create a link for themselves
+                link = UserServerLink(user_id=user["user_id"], server_id=srv.id, receive_alerts=payload.receive_alerts)
+                sess.add(link)
+        else:
+            link.receive_alerts = payload.receive_alerts
+            
+        sess.commit()
+        return {"status": "updated", "server_id": server_id, "receive_alerts": payload.receive_alerts}
+
 @app.get("/api/audit-logs", response_model=List[AuditLogResponse])
 def list_audit_logs(user: dict = Depends(require_admin)):
     with Session(engine) as sess:
@@ -910,6 +1087,41 @@ def ingest_metrics(payload: MetricsIngestSchema, x_auth_token: Optional[str] = H
                     print(f"[ALERT] Sending Disk alert for {srv.server_id}. Threshold: {disk_limit}% (Global or Custom). Applied rules: {applied_rules}")
                     send_alert_email(payload.server_id, "Disco Lleno", payload.disk.percent, disk_limit, recipients, full_metrics)
                     _alert_state[key] = current_time
+
+            # --- User Specific Thresholds ---
+            user_thresholds = sess.execute(select(UserServerThreshold).where(UserServerThreshold.server_id == payload.server_id)).scalars().all()
+            for ut in user_thresholds:
+                # Check CPU
+                if ut.cpu_limit and payload.cpu.total >= ut.cpu_limit:
+                    key = (payload.server_id, ut.user_id, "cpu")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                        user_obj = sess.get(User, ut.user_id)
+                        if user_obj and user_obj.receive_alerts: # Check if user wants alerts globally
+                             print(f"[ALERT] Sending User CPU alert for {srv.server_id} to {user_obj.email}")
+                             send_alert_email(payload.server_id, "CPU Alta (Personal)", payload.cpu.total, ut.cpu_limit, [{"email": user_obj.email, "name": user_obj.name}], full_metrics)
+                             _alert_state[key] = current_time
+                
+                # Check Memory
+                mem_pct = (payload.memory.used / payload.memory.total) * 100 if payload.memory.total > 0 else 0
+                if ut.mem_limit and mem_pct >= ut.mem_limit:
+                    key = (payload.server_id, ut.user_id, "memory")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                         user_obj = sess.get(User, ut.user_id)
+                         if user_obj and user_obj.receive_alerts:
+                             send_alert_email(payload.server_id, "Memoria Alta (Personal)", mem_pct, ut.mem_limit, [{"email": user_obj.email, "name": user_obj.name}], full_metrics)
+                             _alert_state[key] = current_time
+                             
+                # Check Disk
+                if ut.disk_limit and payload.disk.percent >= ut.disk_limit:
+                    key = (payload.server_id, ut.user_id, "disk")
+                    last_sent = _alert_state.get(key, 0)
+                    if current_time - last_sent > ALERT_COOLDOWN:
+                         user_obj = sess.get(User, ut.user_id)
+                         if user_obj and user_obj.receive_alerts:
+                             send_alert_email(payload.server_id, "Disco Lleno (Personal)", payload.disk.percent, ut.disk_limit, [{"email": user_obj.email, "name": user_obj.name}], full_metrics)
+                             _alert_state[key] = current_time
 
         except Exception as e:
             import traceback
@@ -1059,6 +1271,25 @@ def set_alerts(payload: AlertConfigSchema, user: dict = Depends(require_admin)):
             cfg.disk_used_percent = payload.disk_used_percent
         sess.commit()
         return {"status": "updated"}
+
+@app.get("/api/admin/logs")
+def get_server_logs(lines: int = 100, user: dict = Depends(require_admin)):
+    """
+    Retorna las últimas N líneas del archivo de logs del servidor.
+    """
+    if not LOG_FILE.exists():
+        return {"logs": ["Log file not found."]}
+    
+    try:
+        # Leer las últimas líneas de manera eficiente (simple implementation)
+        # Para archivos muy grandes, usar 'deque' o 'seek' sería mejor, pero esto basta por ahora.
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+            return {"logs": all_lines[-lines:]}
+    except Exception as e:
+        logger.error(f"Error reading logs: {e}")
+        return {"logs": [f"Error reading logs: {str(e)}"]}
+
 
 
 # --- SMTP Configuration ---
@@ -1349,6 +1580,48 @@ def preview_alert_decision(payload: AlertPreviewRequest, user: dict = Depends(re
     with Session(engine) as sess:
         result = explain_alert_decision(sess, payload.user_id, payload.server_id)
         return AlertPreviewResponse(**result)
+
+
+# --- User Server Thresholds ---
+
+@app.get("/api/user/thresholds/{server_id}", response_model=UserServerThresholdResponse)
+def get_user_server_threshold(server_id: str, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        ut = sess.execute(select(UserServerThreshold).where(
+            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.server_id == server_id
+        )).scalar_one_or_none()
+        
+        if not ut:
+            # Return empty/default structure if not found, with dummy id
+            return UserServerThresholdResponse(id=0, user_id=user["id"], server_id=server_id)
+        return ut
+
+@app.post("/api/user/thresholds", response_model=UserServerThresholdResponse)
+def set_user_server_threshold(payload: UserServerThresholdUpdate, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        ut = sess.execute(select(UserServerThreshold).where(
+            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.server_id == payload.server_id
+        )).scalar_one_or_none()
+        
+        if not ut:
+            ut = UserServerThreshold(
+                user_id=user["id"],
+                server_id=payload.server_id,
+                cpu_limit=payload.cpu_limit,
+                mem_limit=payload.mem_limit,
+                disk_limit=payload.disk_limit
+            )
+            sess.add(ut)
+        else:
+            ut.cpu_limit = payload.cpu_limit
+            ut.mem_limit = payload.mem_limit
+            ut.disk_limit = payload.disk_limit
+        
+        sess.commit()
+        sess.refresh(ut)
+        return ut
 
 
 # --- Servir Frontend ---

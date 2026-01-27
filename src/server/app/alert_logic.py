@@ -5,6 +5,7 @@ import json
 import time
 from .models import Server, AlertRecipient, User, AlertRule, NotificationRule, UserGroup
 from .email_utils import send_alert_email
+from .notification_utils import send_webhook_notification, send_sms_notification, send_whatsapp_notification
 
 def get_alert_recipients(sess: Session, server: Server, alert_type: str) -> tuple[list, list[str]]:
     applied_rules_info = []
@@ -13,7 +14,12 @@ def get_alert_recipients(sess: Session, server: Server, alert_type: str) -> tupl
     # 1. External AlertRecipients (Always receive)
     global_recipients = sess.execute(select(AlertRecipient)).scalars().all()
     for r in global_recipients:
-        recipients.append({"email": r.email, "name": r.name})
+        recipients.append({
+            "email": r.email, 
+            "name": r.name,
+            "phone_number": r.phone_number,
+            "webhook_url": r.webhook_url
+        })
     if global_recipients:
         applied_rules_info.append("Global AlertRecipients")
 
@@ -310,12 +316,12 @@ def check_advanced_rules(sess: Session, server: Server, metrics_payload, alert_s
                     # Deduplicate
                     unique_recipients = {x["email"]: x for x in recipients}.values()
                     
-                    send_alert_email(
+                    send_multichannel_alert(
                         server_id=server.server_id,
                         alert_type=f"{r.alert_type} ({r.severity})",
                         current_value=val,
                         threshold=limit,
-                        extra_recipients=list(unique_recipients),
+                        recipients=list(unique_recipients),
                         full_metrics=metrics_payload.model_dump()
                     )
                     state["last_sent"] = current_time

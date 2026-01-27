@@ -306,9 +306,11 @@ const getServerOs = (server) => {
                   <span class="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-400">UpKeep</span>
                 </div>
           <div class="flex items-center space-x-4">
-            <router-link v-if="authStore.isAdmin" to="/admin/users" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors mr-2">
-              Users
-            </router-link>
+            <div class="flex items-center space-x-2" v-if="authStore.isAdmin">
+                 <router-link to="/admin/users" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Users</router-link>
+                 <span class="text-gray-600">|</span>
+                 <router-link to="/admin/logs" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Logs</router-link>
+            </div>
             <div class="flex flex-col items-end">
               <span class="text-sm font-medium text-gray-200">{{ authStore.user?.name || authStore.user?.email }}</span>
               <span class="text-xs text-cyan-500/80" v-if="authStore.isAdmin">Administrator</span>

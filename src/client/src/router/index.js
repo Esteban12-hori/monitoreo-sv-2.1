@@ -5,6 +5,7 @@ import Dashboard from '../views/Dashboard.vue'
 import Setup from '../views/Setup.vue'
 import AdminUsers from '../views/AdminUsers.vue'
 import AdminGroups from '../views/AdminGroups.vue'
+import AdminLogs from '../views/AdminLogs.vue'
 import ServerDetail from '../views/ServerDetail.vue'
 import ChangePasswordModal from '../components/ChangePasswordModal.vue'
 
@@ -47,6 +48,12 @@ const routes = [
     path: '/admin/groups',
     name: 'AdminGroups',
     component: AdminGroups,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/admin/logs',
+    name: 'AdminLogs',
+    component: AdminLogs,
     meta: { requiresAuth: true, requiresAdmin: true }
   },
   {

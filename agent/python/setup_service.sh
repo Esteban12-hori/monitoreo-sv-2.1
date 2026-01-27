@@ -6,7 +6,17 @@ AGENT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_NAME="monitoreo-agent.service"
 SERVICE_PATH="/etc/systemd/system/$SERVICE_NAME"
 CURRENT_USER=$(whoami)
-PYTHON_EXEC=$(which python3)
+# Detectar Python (preferir venv)
+if [ -f "$AGENT_DIR/venv/bin/python" ]; then
+    PYTHON_EXEC="$AGENT_DIR/venv/bin/python"
+    echo "✅ Entorno virtual detectado: $PYTHON_EXEC"
+elif [ -f "$AGENT_DIR/venv/bin/python3" ]; then
+    PYTHON_EXEC="$AGENT_DIR/venv/bin/python3"
+    echo "✅ Entorno virtual detectado: $PYTHON_EXEC"
+else
+    PYTHON_EXEC=$(which python3)
+    echo "⚠️  Usando Python del sistema: $PYTHON_EXEC"
+fi
 
 echo "=== Instalación del Servicio del Agente ==="
 echo "Directorio del Agente: $AGENT_DIR"

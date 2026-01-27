@@ -7,7 +7,7 @@ User=azureuser
 Group=azureuser
 WorkingDirectory=/opt/monitoreo-sv-2.1
 Environment="PATH=/opt/monitoreo-sv-2.1/src/server/.venv/bin"
-# EnvironmentFile=/opt/monitoreo-sv-2.1/.env
+Environment="PYTHONPATH=/opt/monitoreo-sv-2.1"
 ExecStart=/opt/monitoreo-sv-2.1/src/server/.venv/bin/python -m uvicorn src.server.app.main:app --host 0.0.0.0 --port 8001
 Restart=always
 

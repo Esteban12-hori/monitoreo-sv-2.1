@@ -44,11 +44,74 @@ const lastUpdate = ref('-')
 const isOnline = ref(false)
 const isLoading = ref(false)
 const isConfigModalOpen = ref(false)
+const isUserConfigModalOpen = ref(false)
+const userThresholds = ref({
+  cpu_limit: null,
+  mem_limit: null,
+  disk_limit: null,
+  receive_alerts: true
+})
+const savingUserConfig = ref(false)
 const tempInterval = ref(300)
 const savingInterval = ref(false)
 let pollTimer = null
 
 const isAdmin = computed(() => authStore.isAdmin)
+
+const openUserConfigModal = async () => {
+  try {
+    const res = await axios.get(`${API_BASE}/api/servers/${serverId}/thresholds/me`, { headers: authStore.getHeaders() })
+    userThresholds.value = {
+        cpu_limit: res.data.cpu_limit,
+        mem_limit: res.data.mem_limit,
+        disk_limit: res.data.disk_limit,
+        receive_alerts: res.data.receive_alerts ?? true
+    }
+    isUserConfigModalOpen.value = true
+  } catch (e) {
+    console.error(e)
+    alert('Error loading user config')
+  }
+}
+
+const validateThreshold = (val) => {
+  if (val === null || val === '' || val === undefined) return true
+  const n = Number(val)
+  return !isNaN(n) && n >= 0 && n <= 100
+}
+
+const saveUserConfig = async () => {
+    if (!validateThreshold(userThresholds.value.cpu_limit) ||
+        !validateThreshold(userThresholds.value.mem_limit) ||
+        !validateThreshold(userThresholds.value.disk_limit)) {
+        alert('Los umbrales deben estar entre 0 y 100')
+        return
+    }
+
+    savingUserConfig.value = true
+    try {
+        // Update Thresholds
+        await axios.put(`${API_BASE}/api/servers/${serverId}/thresholds/me`, {
+            cpu_limit: userThresholds.value.cpu_limit === '' ? null : userThresholds.value.cpu_limit,
+            mem_limit: userThresholds.value.mem_limit === '' ? null : userThresholds.value.mem_limit,
+            disk_limit: userThresholds.value.disk_limit === '' ? null : userThresholds.value.disk_limit,
+            server_id: serverId 
+        }, { headers: authStore.getHeaders() })
+
+        // Update Subscription
+        await axios.put(`${API_BASE}/api/servers/${serverId}/subscription`, {
+            receive_alerts: userThresholds.value.receive_alerts
+        }, { headers: authStore.getHeaders() })
+
+        alert('Configuración personal guardada.')
+        isUserConfigModalOpen.value = false
+    } catch (e) {
+        console.error(e)
+        alert('Error saving config')
+    } finally {
+        savingUserConfig.value = false
+    }
+}
 
 const isRedisRunning = computed(() => {
   if (!latestMetrics.value || !latestMetrics.value.services) return false
@@ -107,13 +170,18 @@ const openConfigModal = async () => {
 
 const saveInterval = async () => {
   if (!serverInfo.value) return
+  const val = parseInt(tempInterval.value)
+  if (isNaN(val) || val < 0) {
+      alert('Intervalo inválido')
+      return
+  }
   savingInterval.value = true
   try {
     await axios.put(`${API_BASE}/api/admin/servers/${serverId}/config`, {
-      report_interval: parseInt(tempInterval.value)
+      report_interval: val
     }, { headers: authStore.getHeaders() })
     
-    serverInfo.value.report_interval = parseInt(tempInterval.value)
+    serverInfo.value.report_interval = val
     alert('Intervalo actualizado correctamente.')
     isConfigModalOpen.value = false
   } catch (e) {
@@ -307,8 +375,16 @@ const fetchHistory = async () => {
       headers: authStore.getHeaders()
     })
 
-    const data = res.data
-    if (data.length > 0) {
+    const rawData = res.data
+    if (Array.isArray(rawData) && rawData.length > 0) {
+      // Filter valid metrics to avoid crashes
+      const data = rawData.filter(d => d && d.cpu && d.memory && d.disk && d.network)
+      
+      if (data.length === 0) {
+          latestMetrics.value = null
+          return
+      }
+
       const last = data[data.length - 1]
       latestMetrics.value = last
       
@@ -324,15 +400,29 @@ const fetchHistory = async () => {
          }
       }
 
-      lastUpdate.value = new Date(last.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      let lastTs = new Date().getTime()
+      if (last.ts) {
+          const dateObj = new Date(last.ts)
+          if (!isNaN(dateObj.getTime())) {
+             lastTs = dateObj.getTime()
+             lastUpdate.value = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          } else {
+             lastUpdate.value = 'Invalid Date'
+          }
+      } else {
+          lastUpdate.value = '-'
+      }
       
-      const lastTs = new Date(last.ts).getTime()
       const now = new Date().getTime()
       const diffMinutes = (now - lastTs) / 1000 / 60
       const tolerance = (last.report_interval ? (last.report_interval * 2 / 60) : 5) 
       isOnline.value = diffMinutes < tolerance
       
-      const labels = data.map(d => new Date(d.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+      const labels = data.map(d => {
+        if (!d.ts) return ''
+        const date = new Date(d.ts)
+        return isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      })
       
       const gradient = (ctx, color1, color2) => {
         const g = ctx.createLinearGradient(0, 0, 0, 200)
@@ -345,7 +435,7 @@ const fetchHistory = async () => {
         labels,
         datasets: [{
           label: 'CPU',
-          data: data.map(d => d.cpu.total),
+          data: data.map(d => d.cpu?.total || 0),
           borderColor: '#22d3ee', // cyan-400
           backgroundColor: (context) => {
             const ctx = context.chart.ctx;
@@ -361,7 +451,7 @@ const fetchHistory = async () => {
         labels,
         datasets: [{
           label: 'Memoria',
-          data: data.map(d => (d.memory.used / d.memory.total * 100)),
+          data: data.map(d => d.memory && d.memory.total ? (d.memory.used / d.memory.total * 100) : 0),
           borderColor: '#34d399', // emerald-400
           backgroundColor: (context) => {
             const ctx = context.chart.ctx;
@@ -431,6 +521,16 @@ onUnmounted(() => {
             <span class="text-gray-700">|</span>
             <span>Last update: {{ lastUpdate }}</span>
           </div>
+
+          <button 
+            @click="openUserConfigModal"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20 transition-all text-sm font-medium"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            My Alerts
+          </button>
 
           <button 
             @click="openConfigModal"
@@ -644,6 +744,76 @@ onUnmounted(() => {
       </div>
 
     </main>
+
+    <!-- My Alerts Modal -->
+    <div v-if="isUserConfigModalOpen" class="fixed inset-0 z-[100] overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-center justify-center min-h-screen px-4 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-black/80 transition-opacity backdrop-blur-sm" aria-hidden="true" @click="isUserConfigModalOpen = false"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div class="inline-block align-bottom bg-[#1f2937] rounded-2xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg w-full border border-gray-700 relative z-10">
+          <div class="px-6 py-6">
+             <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
+               <svg class="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+               </svg>
+               My Alert Preferences
+             </h3>
+             <div class="space-y-6">
+               
+               <!-- Master Switch -->
+               <div class="flex items-center justify-between bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+                  <div>
+                    <div class="text-sm font-medium text-white">Receive Alerts</div>
+                    <div class="text-xs text-gray-400">Enable notifications for this server</div>
+                  </div>
+                  <button 
+                    @click="userThresholds.receive_alerts = !userThresholds.receive_alerts"
+                    class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                    :class="userThresholds.receive_alerts ? 'bg-indigo-600' : 'bg-gray-700'"
+                  >
+                    <span
+                      class="inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out"
+                      :class="userThresholds.receive_alerts ? 'translate-x-6' : 'translate-x-1'"
+                    />
+                  </button>
+               </div>
+
+               <div class="space-y-4" :class="{ 'opacity-50 pointer-events-none': !userThresholds.receive_alerts }">
+                 <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-700 pb-2">Custom Thresholds</h4>
+                 <p class="text-xs text-gray-400">Leave empty to use global defaults.</p>
+                 
+                 <div class="grid grid-cols-3 gap-4">
+                   <div>
+                     <label class="block text-xs font-medium text-gray-300 mb-1">CPU %</label>
+                     <input v-model.number="userThresholds.cpu_limit" type="number" min="1" max="100" placeholder="Default" class="w-full bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 outline-none">
+                   </div>
+                   <div>
+                     <label class="block text-xs font-medium text-gray-300 mb-1">RAM %</label>
+                     <input v-model.number="userThresholds.mem_limit" type="number" min="1" max="100" placeholder="Default" class="w-full bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 outline-none">
+                   </div>
+                   <div>
+                     <label class="block text-xs font-medium text-gray-300 mb-1">Disk %</label>
+                     <input v-model.number="userThresholds.disk_limit" type="number" min="1" max="100" placeholder="Default" class="w-full bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm focus:ring-1 focus:ring-indigo-500 outline-none">
+                   </div>
+                 </div>
+               </div>
+
+             </div>
+          </div>
+          <div class="bg-gray-900/50 px-6 py-4 flex justify-end gap-3 border-t border-gray-700">
+             <button @click="isUserConfigModalOpen = false" class="px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-sm font-medium border border-gray-600 hover:border-gray-500">Cancel</button>
+             <button 
+               @click="saveUserConfig" 
+               :disabled="savingUserConfig"
+               class="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-all text-sm font-medium flex items-center gap-2 disabled:opacity-50 shadow-lg shadow-indigo-500/20"
+             >
+               <svg v-if="savingUserConfig" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+               Save Preferences
+             </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Config Modal -->
     <div v-if="isConfigModalOpen" class="fixed inset-0 z-[100] overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">

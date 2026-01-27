@@ -17,6 +17,8 @@ class UserCreateSchema(BaseModel):
     receive_alerts: bool = False
     must_change_password: bool = True
     is_blocked: bool = False
+    phone_number: Optional[str] = None
+    webhook_url: Optional[str] = None
 
 class UserUpdateSchema(BaseModel):
     name: Optional[str] = None
@@ -24,6 +26,8 @@ class UserUpdateSchema(BaseModel):
     receive_alerts: Optional[bool] = None
     password: Optional[str] = Field(None, min_length=6)
     is_blocked: Optional[bool] = None
+    phone_number: Optional[str] = None
+    webhook_url: Optional[str] = None
 
 class UserResponseSchema(BaseModel):
     id: int
@@ -33,6 +37,8 @@ class UserResponseSchema(BaseModel):
     receive_alerts: bool
     must_change_password: bool
     is_blocked: bool
+    phone_number: Optional[str]
+    webhook_url: Optional[str]
     created_at: Optional[datetime]
 
     class Config:
@@ -63,7 +69,21 @@ class ServerConfigUpdateSchema(BaseModel):
 class AlertRecipientCreateSchema(BaseModel):
     email: EmailStr
     name: Optional[str] = None
-    recipient_type: str = "OTROS"
+    recipient_type: Optional[str] = "OTROS"
+    phone_number: Optional[str] = None
+    webhook_url: Optional[str] = None
+
+class AlertRecipientSchema(BaseModel):
+    id: int
+    email: str
+    name: Optional[str]
+    recipient_type: str
+    phone_number: Optional[str]
+    webhook_url: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
 
 
 # --- Metrics Schemas ---
@@ -73,22 +93,27 @@ class MetricsCPU(BaseModel):
     per_core: List[float]
 
 class MetricsMemory(BaseModel):
-    total: int
-    used: int
-    free: int
-    cache: int
+    total: float
+    used: float
+    free: float
+    cache: float
 
 class MetricsDisk(BaseModel):
-    total: int
-    used: int
-    free: int
+    total: float
+    used: float
+    free: float
     percent: float
 
 class MetricsNetwork(BaseModel):
-    bytes_sent: int
-    bytes_recv: int
+    bytes_sent: float
+    bytes_recv: float
+    packets_sent: Optional[float] = None
+    packets_recv: Optional[float] = None
     sent_rate: Optional[float] = None
     recv_rate: Optional[float] = None
+
+    class Config:
+        extra = "allow"
 
 class MetricsContainer(BaseModel):
     id: Optional[str] = None
@@ -108,7 +133,7 @@ class MetricsDocker(BaseModel):
 
 class MetricsService(BaseModel):
     name: str
-    status: str
+    status: Optional[str] = "active"
     
     class Config:
         extra = "allow"
@@ -148,15 +173,7 @@ class UserServerAssignmentResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class AlertRecipientSchema(BaseModel):
-    id: int
-    email: str
-    name: Optional[str]
-    recipient_type: str
-    created_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
 
 class AlertRuleBase(BaseModel):
     alert_type: str
@@ -198,6 +215,29 @@ class ServerThresholdResponse(ServerThresholdBase):
 
 class ServerThresholdUpdate(ServerThresholdBase):
     pass
+
+
+class UserServerThresholdBase(BaseModel):
+    server_id: str
+    cpu_limit: Optional[float] = Field(None, ge=0.1, le=100.0)
+    mem_limit: Optional[float] = Field(None, ge=0.1, le=100.0)
+    disk_limit: Optional[float] = Field(None, ge=0.1, le=100.0)
+
+class UserServerThresholdUpdate(UserServerThresholdBase):
+    pass
+
+class ServerSubscriptionUpdate(BaseModel):
+    receive_alerts: bool
+
+class UserServerThresholdResponse(UserServerThresholdBase):
+    id: int
+    user_id: int
+    receive_alerts: bool = True # Added field
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
 
 class ServerThresholdImport(ServerThresholdBase):
     server_id: str

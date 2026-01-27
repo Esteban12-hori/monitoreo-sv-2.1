@@ -16,12 +16,110 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - **Seguridad**: Autenticación JWT y gestión de roles.
 - **Fácil Despliegue**: Soporte completo para Docker y scripts de instalación automatizados.
 
+## 🧩 Personalización por Usuario (Nuevo)
+
+- **Umbrales Personales**: Cada usuario puede configurar sus propios límites de alerta para CPU, RAM y Disco.
+- **Suscripción Selectiva**: Activa o desactiva alertas para servidores específicos sin afectar a otros usuarios.
+- **Preferencias de visualización**: Tema, tipo de gráficos, idioma.
+- **Vistas guardadas**: (por ejemplo: “vista nocturna”, “solo producción”).
+
+## 🌐 Sistema de Agentes Distribuido
+
+- Agentes instalables en Linux y Windows.
+- Envío automático y periódico de métricas al servidor central.
+- Comunicación segura mediante TLS y tokens por agente.
+- Soporte para métricas personalizadas a través de plugins.
+
+## 🚨 Alertas Avanzadas y Escalables
+
+- Triggers configurables (por ejemplo: CPU > 80 % durante 5 min, disco < 10 %).
+- Niveles de severidad: informativo, advertencia y crítico.
+- Escalado de alertas si no hay respuesta (otro canal o destinatario).
+- Historial de alertas, estado y ACK (alertas reconocidas).
+
+## 📣 Notificaciones Multicanal
+
+- Email mejorado con plantillas y pruebas desde el panel.
+- Integraciones planeadas: Telegram, Discord, Slack.
+- Webhooks para integrarse con otros sistemas.
+- Integración con sistemas de tickets (roadmap).
+
+## 📈 Dashboards Avanzados
+
+- Widgets configurables: gráficos, tablas, estados y mapas.
+- Comparación histórica (día vs semana vs mes).
+- Vistas por servidor, servicio y entorno (producción / desarrollo / test).
+- Mapas visuales de infraestructura.
+
+## 🏗 Arquitectura Escalable
+
+- Soporte actual en SQLite con roadmap hacia PostgreSQL/MariaDB.
+- Separación lógica de servicios: API, colector y frontend.
+- Preparado para crecer a cientos o miles de hosts.
+
+## 📚 Histórico y Análisis de Datos
+
+- Retención de métricas configurable.
+- Agregaciones de datos (promedios, máximos, picos).
+- Exportación de datos a CSV y JSON.
+
+## 🧩 Monitoreo de Servicios
+
+- Servicios de infraestructura: Nginx, Apache, bases de datos y Redis.
+- Contenedores Docker y puertos TCP/HTTP.
+- Estados de servicios del sistema.
+
+## 🌐 Monitoreo de Red
+
+- Latencia mediante ping.
+- Tráfico por interfaz de red.
+- Paquetes perdidos y métricas vía SNMP para switches y routers.
+
+## 🔐 Seguridad y Control de Acceso
+
+- Roles definidos: Admin, Operador y Usuario.
+- Permisos por servidor y entorno.
+- Tokens dedicados por agente.
+- Auditoría de cambios (quién hizo qué y cuándo).
+
 ## 🛠 Stack Tecnológico
 
 - **Frontend**: Vue 3, TailwindCSS, Chart.js, Vite.
 - **Backend**: Python FastAPI, SQLAlchemy, SQLite (por defecto).
 - **Agente**: Python (psutil, requests).
 - **Infraestructura**: Docker, Docker Compose, Nginx.
+
+---
+
+## 📥 Descarga y Actualización
+
+### Descargar por primera vez
+Para obtener la última versión del proyecto, clona el repositorio:
+
+```bash
+git clone <URL_DEL_REPOSITORIO>
+cd upkeep
+```
+
+### Actualizar a la última versión
+Si ya tienes el proyecto descargado y quieres actualizarlo:
+
+```bash
+# 1. Obtener los últimos cambios
+git pull origin main
+
+# 2. Actualizar dependencias del Backend
+cd src/server
+pip install -r requirements.txt
+
+# 3. Aplicar migraciones de base de datos (si las hay)
+python scripts/migrate_db.py  # o el script correspondiente
+
+# 4. Actualizar dependencias del Frontend
+cd ../client
+npm install
+npm run build
+```
 
 ---
 
@@ -35,137 +133,27 @@ La forma más sencilla de iniciar el servidor (Backend + Frontend).
    docker-compose up -d --build
    ```
 3. **Acceder**:
-   - Dashboard: [http://localhost](http://localhost)
-   - API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - Frontend: `http://localhost` (o el puerto configurado)
+   - Backend API: `http://localhost:8000/docs`
 
-### 🔑 Credenciales por Defecto
-- **Usuario**: `admi@gmial.com`
-- **Contraseña**: `admin`
+## 🔧 Instalación Manual (Desarrollo)
 
----
-
-## 🖥️ Instalación del Agente (En servidores a monitorear)
-
-El agente debe instalarse en cada servidor que desees monitorear.
-
-### Opción A: Script Interactivo (Fácil)
-
-1. Copia la carpeta `agent/python` al servidor destino.
-2. Ejecuta el script de instalación:
-   
-   **Windows:**
-   ```cmd
-   cd agent/python
-   setup_agent.bat
-   ```
-   
-   **Linux:**
-   ```bash
-   cd agent/python
-   chmod +x setup_agent.sh
-   ./setup_agent.sh
-   ```
-
-3. Sigue las instrucciones en pantalla para configurar la URL del servidor y el Token.
-
-### Opción B: Docker
-
-```bash
-docker run -d \
-  --name monitor-agent \
-  --network host \
-  -e SERVER_URL="http://TU_IP_SERVIDOR:8000" \
-  -e SERVER_ID="mi-servidor-01" \
-  -e TOKEN="TU_TOKEN_DE_AGENTE" \
-  monitor-agent-image
-```
-*(Nota: Debes construir la imagen del agente primero usando `agent/python/Dockerfile`)*
-
----
-
-## � Despliegue Manual en Linux (Frontend con Nginx)
-
-Si prefieres no usar Docker y quieres servir el frontend en el puerto 80 usando Nginx directamente:
-
-1. **Construir el proyecto**:
-   ```bash
-   cd src/client
-   npm install
-   npm run build
-   ```
-   Esto generará la carpeta `dist` con los archivos estáticos.
-
-2. **Configurar Nginx**:
-   Instala Nginx (`sudo apt install nginx`) y edita la configuración:
-   ```bash
-   sudo nano /etc/nginx/sites-available/default
-   ```
-
-   Usa esta configuración (ajusta la ruta `root` a donde esté tu carpeta `dist`):
-   ```nginx
-   server {
-       listen 80;
-       server_name _;  # O tu dominio/IP
-
-       root /home/usuario/monitoreo-sv-2.1/src/client/dist;
-       index index.html;
-
-       location / {
-           try_files $uri $uri/ /index.html;
-       }
-
-       # Proxy para conectar con el Backend
-       location /api/ {
-           proxy_pass http://localhost:8000/api/;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-       }
-   }
-   ```
-
-3. **Reiniciar Nginx**:
-   ```bash
-   sudo systemctl restart nginx
-   ```
-
----
-
-## �🔧 Instalación Manual (Desarrollo)
-
-Si prefieres ejecutarlo localmente sin Docker para desarrollo.
-
-### 1. Backend
+### Backend
 ```bash
 cd src/server
-python -m venv venv
-# Windows: venv\Scripts\activate
-# Linux: source venv/bin/activate
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux/Mac
+source .venv/bin/activate
+
 pip install -r requirements.txt
-python -m uvicorn src.server.app.main:app --reload --host 0.0.0.0 --port 8000
+python app/main.py
 ```
 
-### 2. Frontend
+### Frontend
 ```bash
 cd src/client
 npm install
 npm run dev
 ```
-
----
-
-## 📄 Estructura del Proyecto
-
-```
-.
-├── agent/                  # Código del agente de monitoreo
-│   └── python/             # Implementación en Python + Scripts de instalación
-├── src/
-│   ├── client/             # Frontend (Vue 3 + Vite)
-│   └── server/             # Backend (FastAPI)
-├── docker-compose.yml      # Orquestación de contenedores
-└── README.md               # Documentación
-```
-
-## 🤝 Contribución
-
-¡Las contribuciones son bienvenidas! Por favor, abre un issue o un pull request para mejoras y correcciones.

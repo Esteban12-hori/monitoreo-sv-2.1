@@ -96,7 +96,23 @@ class AlertRecipient(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=True)
     recipient_type = Column(String(50), default="OTROS") # VS, SV, OTROS
+    phone_number = Column(String(50), nullable=True) # WhatsApp/SMS
+    webhook_url = Column(String(500), nullable=True) # Custom Integration
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserServerThreshold(Base):
+    __tablename__ = "user_server_thresholds"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    server_id = Column(String(255), nullable=False) # Not ForeignKey to allow detached configs
+    
+    cpu_limit = Column(Float, nullable=True)
+    mem_limit = Column(Float, nullable=True)
+    disk_limit = Column(Float, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 # --- User Management Extensions (Groups & Rules) ---
@@ -139,6 +155,8 @@ class User(Base):
     receive_alerts = Column(Boolean, default=False) # Master switch
     must_change_password = Column(Boolean, default=False)
     is_blocked = Column(Boolean, default=False)
+    phone_number = Column(String(50), nullable=True)
+    webhook_url = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relación Many-to-Many con Server
