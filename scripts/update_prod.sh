@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Script de actualización automática para el servidor de monitoreo
-# Uso: ./update_prod.sh
+# Script de actualización automática para el servidor de monitoreo (Producción)
+# Uso: ./scripts/update_prod.sh
 
 set -e # Detener script si hay error
 
@@ -9,36 +9,67 @@ echo "========================================"
 echo "🚀 Iniciando actualización del Servidor"
 echo "========================================"
 
+# Obtener directorio raíz del proyecto (padre de scripts/)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
+echo "📂 Directorio del proyecto: $PROJECT_ROOT"
+
 # 1. Descargar últimos cambios
-echo "📥 1. Descargando código fuente (git pull)..."
-git pull origin main
+echo "📥 1. Sincronizando código fuente (git reset --hard)..."
+git fetch origin
+git reset --hard origin/main
 
-# 2. Activar entorno virtual y actualizar dependencias
-echo "📦 2. Verificando dependencias Python..."
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-else
-    echo "⚠️  No se encontró .venv, intentando usar python global o creando venv..."
-    # Asumimos que el entorno ya está configurado en producción
+# 2. Backend: Entorno Virtual y Dependencias
+echo "📦 2. Actualizando Backend..."
+cd src/server
+
+if [ ! -d ".venv" ]; then
+    echo "   ⚠️  No se encontró .venv, creando entorno virtual..."
+    python3 -m venv .venv
 fi
-pip install -r server/requirements.txt
 
-# 3. Aplicar migraciones de base de datos
-echo "🗄️  3. Aplicando migraciones de base de datos..."
-# Aseguramos que las tablas nuevas y columnas se creen
-python server/scripts/migrate_v3.py
+echo "   🔌 Activando entorno virtual..."
+source .venv/bin/activate
 
-# 4. Reiniciar el servicio para aplicar cambios de código
-# Detectar si usamos systemd o pm2
-echo "🔄 4. Reiniciando servicios..."
+echo "   📥 Instalando dependencias (pip)..."
+pip install -r requirements.txt
 
-if systemctl is-active --quiet monitoreo-backend; then
+# 3. Aplicar migraciones
+echo "🗄️  3. Verificando base de datos..."
+# Ejecutamos el script de migración más reciente o el manual de fix
+if [ -f "scripts/fix_db_schema_manual.py" ]; then
+    python scripts/fix_db_schema_manual.py
+else
+    # Fallback a creación básica de tablas
+    python -c "from app.database import engine; from app.models import Base; Base.metadata.create_all(bind=engine)"
+fi
+
+# 4. Frontend: Reconstruir (Opcional, si hay cambios)
+echo "🎨 4. Reconstruyendo Frontend..."
+cd ../client
+if command -v npm >/dev/null; then
+    npm install
+    npm run build
+else
+    echo "   ⚠️  npm no encontrado, saltando build de frontend."
+fi
+
+# 5. Reiniciar servicios
+echo "🔄 5. Reiniciando servicios..."
+if systemctl is-active --quiet monitor-backend; then
+    echo "   - Reiniciando servicio Systemd 'monitor-backend'..."
+    sudo systemctl restart monitor-backend
+    echo "   ✅ Servicio backend reiniciado."
+elif systemctl is-active --quiet monitoreo-backend; then
+    # Por si acaso el nombre antiguo
     echo "   - Reiniciando servicio Systemd 'monitoreo-backend'..."
     sudo systemctl restart monitoreo-backend
     echo "   ✅ Servicio backend reiniciado."
 else
-    echo "   ⚠️  No se detectó servicio systemd 'monitoreo-backend' activo."
-    echo "   Si estás ejecutando manualmente, por favor reinicia el proceso de Python (Ctrl+C y volver a lanzar)."
+    echo "   ⚠️  No se detectó servicio systemd activo."
+    echo "   Si estás ejecutando manualmente, por favor reinicia el proceso."
 fi
 
 echo "========================================"
