@@ -9,18 +9,20 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
   Filler
 } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import { Line, Bar } from 'vue-chartjs'
 
 ChartJS.register(
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -38,6 +40,7 @@ const chartDataCpu = ref(null)
 const chartDataMem = ref(null)
 const chartDataDisk = ref(null)
 const chartDataNetwork = ref(null)
+const chartDataWebhook = ref(null) // New chart data
 const latestMetrics = ref(null)
 const serverInfo = ref(null)
 const lastUpdate = ref('-')
@@ -53,6 +56,7 @@ const userThresholds = ref({
 })
 const savingUserConfig = ref(false)
 const tempInterval = ref(300)
+const tempWebhookEnabled = ref(false) // New toggle state
 const savingInterval = ref(false)
 let pollTimer = null
 
@@ -161,6 +165,7 @@ const openConfigModal = async () => {
 
   if (serverInfo.value) {
     tempInterval.value = serverInfo.value.report_interval ?? 300
+    tempWebhookEnabled.value = serverInfo.value.webhook_enabled ?? false
     isConfigModalOpen.value = true
   } else {
     // Si falla, intentamos usar los datos que ya tengamos o mostramos error
@@ -177,19 +182,77 @@ const saveInterval = async () => {
   }
   savingInterval.value = true
   try {
+    // Save Interval
     await axios.put(`${API_BASE}/api/admin/servers/${serverId}/config`, {
       report_interval: val
     }, { headers: authStore.getHeaders() })
     
+    // Save Webhook Config
+    await axios.put(`${API_BASE}/api/servers/${serverId}/webhook-config`, {
+        webhook_enabled: tempWebhookEnabled.value
+    }, { headers: authStore.getHeaders() })
+
     serverInfo.value.report_interval = val
-    alert('Intervalo actualizado correctamente.')
+    serverInfo.value.webhook_enabled = tempWebhookEnabled.value
+    
+    alert('Configuración actualizada correctamente.')
     isConfigModalOpen.value = false
+    
+    // Refresh webhook data if enabled
+    if (tempWebhookEnabled.value) {
+        fetchWebhookData()
+    } else {
+        chartDataWebhook.value = null
+    }
+
   } catch (e) {
     console.error(e)
-    alert('Error al actualizar intervalo: ' + (e.response?.data?.detail || e.message))
+    alert('Error al actualizar configuración: ' + (e.response?.data?.detail || e.message))
   } finally {
     savingInterval.value = false
   }
+}
+
+const fetchWebhookData = async () => {
+    if (!serverInfo.value?.webhook_enabled) return
+    
+    try {
+        const res = await axios.get(`${API_BASE}/api/servers/${serverId}/data-monitoring`, {
+            params: { limit: 100 },
+            headers: authStore.getHeaders()
+        })
+        
+        const data = res.data
+        if (!data || data.length === 0) {
+            chartDataWebhook.value = null
+            return
+        }
+
+        // Group by hour/day or just show last N events
+        // Let's show count by "app" or "flow" for now, or events over time?
+        // User asked for "grafico en el panel". Let's do events per hour or simply a bar chart of recent activity by Flow.
+        
+        // Let's aggregate by Flow
+        const flowCounts = {}
+        data.forEach(d => {
+            const flow = d.flow || 'Unknown'
+            flowCounts[flow] = (flowCounts[flow] || 0) + 1
+        })
+        
+        chartDataWebhook.value = {
+            labels: Object.keys(flowCounts),
+            datasets: [{
+                label: 'Eventos por Flujo',
+                data: Object.values(flowCounts),
+                backgroundColor: 'rgba(244, 114, 182, 0.5)', // pink-400
+                borderColor: '#f472b6',
+                borderWidth: 1
+            }]
+        }
+        
+    } catch (e) {
+        console.error("Error fetching webhook data", e)
+    }
 }
 
 const copyServiceEndpoint = async (svc) => {
@@ -481,7 +544,13 @@ const fetchHistory = async () => {
 onMounted(async () => {
   await fetchServerInfo()
   await fetchHistory()
-  pollTimer = setInterval(fetchHistory, 10000)
+  await fetchWebhookData() // Initial fetch
+  pollTimer = setInterval(async () => {
+      await fetchHistory()
+      if (serverInfo.value?.webhook_enabled) {
+          await fetchWebhookData()
+      }
+  }, 10000)
 })
 
 onUnmounted(() => {
@@ -583,6 +652,23 @@ onUnmounted(() => {
               </h3>
               <div class="h-64">
                 <Line v-if="chartDataMem" :data="chartDataMem" :options="chartOptions" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Data Monitoring Chart -->
+          <div v-if="serverInfo?.webhook_enabled" class="bg-[#111827] rounded-2xl p-6 border border-gray-800 shadow-xl relative overflow-hidden group">
+            <div class="relative z-10">
+              <h3 class="text-lg font-semibold text-gray-100 flex items-center gap-2 mb-4">
+                <span class="w-1 h-6 bg-pink-500 rounded-full shadow-[0_0_10px_rgba(244,114,182,0.5)]"></span>
+                Data Monitoring Events
+                <span class="text-xs font-normal text-gray-500 ml-auto">Last 100 events</span>
+              </h3>
+              <div class="h-64">
+                <Bar v-if="chartDataWebhook" :data="chartDataWebhook" :options="chartOptions" />
+                <div v-else class="h-full flex items-center justify-center text-gray-500 text-sm">
+                    No data received yet
+                </div>
               </div>
             </div>
           </div>
@@ -829,13 +915,31 @@ onUnmounted(() => {
                </svg>
                Server Configuration
              </h3>
-             <div class="space-y-4">
+             <div class="space-y-6">
                <div>
                  <label class="block text-sm font-medium text-gray-300 mb-2">Update Interval</label>
                  <select v-model="tempInterval" class="w-full bg-gray-900 border border-gray-600 text-white rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-cyan-500 focus:border-transparent outline-none transition-all">
                     <option v-for="opt in intervalOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
                  </select>
                  <p class="mt-2 text-xs text-gray-400">Controls how often the agent sends metrics to the server.</p>
+               </div>
+               
+               <!-- Webhook Toggle -->
+               <div class="flex items-center justify-between bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+                  <div>
+                    <div class="text-sm font-medium text-white">Enable Data Monitoring (Webhook)</div>
+                    <div class="text-xs text-gray-400">Allow this server to send external data via webhook.</div>
+                  </div>
+                  <button 
+                    @click="tempWebhookEnabled = !tempWebhookEnabled"
+                    class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                    :class="tempWebhookEnabled ? 'bg-cyan-600' : 'bg-gray-700'"
+                  >
+                    <span
+                      class="inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out"
+                      :class="tempWebhookEnabled ? 'translate-x-6' : 'translate-x-1'"
+                    />
+                  </button>
                </div>
              </div>
           </div>

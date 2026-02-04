@@ -9,18 +9,20 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
   Filler
 } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import { Line, Bar } from 'vue-chartjs'
 
 ChartJS.register(
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -31,6 +33,7 @@ const authStore = useAuthStore()
 const router = useRouter()
 const servers = ref([])
 const metrics = ref({})
+const monitoringStats = ref({ by_app: [], by_server: [] })
 const loading = ref(true)
 const pollInterval = ref(null)
 const smtpWarning = ref(false)
@@ -103,8 +106,18 @@ const fetchServers = async () => {
   }
 }
 
+const fetchMonitoringStats = async () => {
+  try {
+    const res = await axios.get('/api/data-monitoring/stats', { headers: authStore.getHeaders() })
+    monitoringStats.value = res.data
+  } catch (error) {
+    console.error("Error fetching monitoring stats", error)
+  }
+}
+
 const refetchAll = () => {
   filteredServers.value.forEach(s => fetchMetrics(s.server_id))
+  fetchMonitoringStats()
 }
 
 const getPollIntervalMs = () => {
@@ -214,6 +227,43 @@ onUnmounted(() => {
   }
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
+
+
+// Monitoring Chart Config
+const getMonitoringChartData = computed(() => {
+  const data = monitoringStats.value.by_app || []
+  return {
+    labels: data.map(d => d.label || 'Unknown'),
+    datasets: [{
+      label: 'Events',
+      data: data.map(d => d.count),
+      backgroundColor: 'rgba(99, 102, 241, 0.5)',
+      borderColor: '#6366f1',
+      borderWidth: 1,
+      borderRadius: 4
+    }]
+  }
+})
+
+const monitoringChartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    title: { display: true, text: 'Events by Application', color: '#9ca3af' }
+  },
+  scales: {
+    y: { 
+      beginAtZero: true, 
+      grid: { color: '#374151' },
+      ticks: { color: '#9ca3af' }
+    },
+    x: { 
+      grid: { display: false },
+      ticks: { color: '#9ca3af' }
+    }
+  }
+}
 
 // Chart Config Helper
 const getChartData = (serverId, type) => {
@@ -407,6 +457,19 @@ const getServerOs = (server) => {
                  </svg>
                </button>
           </div>
+        </div>
+
+        <!-- Data Monitoring Stats -->
+        <div v-if="monitoringStats.by_app.length > 0" class="mb-8">
+           <h2 class="text-lg font-bold text-gray-300 mb-4 flex items-center gap-2">
+             <svg class="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+             </svg>
+             Data Monitoring Overview
+           </h2>
+           <div class="bg-[#1f2937] p-6 rounded-2xl shadow-lg border border-gray-800 h-72">
+              <Bar :data="getMonitoringChartData" :options="monitoringChartOptions" />
+           </div>
         </div>
 
         <div class="mb-6 -mt-2 text-xs text-gray-400 flex flex-wrap items-center gap-3">

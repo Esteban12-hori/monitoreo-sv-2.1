@@ -83,7 +83,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"event\": \"alert\",\n    \"message\": \"High CPU usage\",\n    \"value\": 99\n}",
+							"raw": "{\n    \"app\": \"POS-System\",\n    \"cashRegisterNumber\": 1,\n    \"userName\": \"John Doe\",\n    \"flow\": \"Sale\",\n    \"patent\": \"ABC-123\",\n    \"vehicleType\": \"Car\",\n    \"product\": \"Gasoline\",\n    \"createdAt\": \"2023-10-27T10:00:00Z\",\n    \"entityId\": \"store-001\",\n    \"workingDay\": \"2023-10-27\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"

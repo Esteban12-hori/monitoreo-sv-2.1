@@ -44,6 +44,41 @@ class UserResponseSchema(BaseModel):
     class Config:
         from_attributes = True
 
+
+class DataMonitoringSchema(BaseModel):
+    app: str
+    cashRegisterNumber: Optional[int] = None
+    userName: str
+    flow: str
+    patent: Optional[str] = None
+    vehicleType: Optional[str] = None
+    product: Optional[str] = None
+    createdAt: str # String ISO from client
+    entityId: str
+    workingDay: str
+
+class DataMonitoringResponse(BaseModel):
+    id: int
+    server_id: str
+    app: str
+    cash_register_number: Optional[int]
+    user_name: Optional[str]
+    flow: Optional[str]
+    patent: Optional[str]
+    vehicle_type: Optional[str]
+    product: Optional[str]
+    entity_id: Optional[str]
+    working_day: Optional[str]
+    client_created_at: Optional[datetime]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ServerWebhookConfigUpdate(BaseModel):
+    webhook_enabled: bool
+
+
 # --- Missing Schemas Added ---
 
 class RegisterServerSchema(BaseModel):

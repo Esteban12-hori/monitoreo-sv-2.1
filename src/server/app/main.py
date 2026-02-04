@@ -6,12 +6,12 @@ import os
 import uuid
 import unicodedata
 
-from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response
+from fastapi import FastAPI, HTTPException, Header, Depends, status, Request, Response, Query
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy import create_engine, select, delete, text
+from sqlalchemy import create_engine, select, delete, text, func
 from sqlalchemy.orm import Session, defer
 from passlib.context import CryptContext
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -20,7 +20,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
-from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule, UserServerThreshold
+from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule, UserServerThreshold, DataMonitoring
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
     UserCreateSchema, UserResponseSchema, ChangePasswordSchema,
@@ -30,7 +30,7 @@ from .schemas import (
     UserUpdateSchema, UserServerAssignmentResponse, SMTPConfigSchema, SMTPConfigResponse,
     UserGroupCreate, UserGroupResponse, UserGroupUpdate, NotificationRuleCreate, NotificationRuleResponse,
     AlertPreviewRequest, AlertPreviewResponse, UserServerThresholdResponse, UserServerThresholdUpdate,
-    ServerSubscriptionUpdate
+    ServerSubscriptionUpdate, DataMonitoringSchema, DataMonitoringResponse, ServerWebhookConfigUpdate
 )
 from .email_utils import send_alert_email
 from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
@@ -503,6 +503,29 @@ def register_server(payload: RegisterServerSchema):
         return {"status": "registered", "server_id": payload.server_id}
 
 
+@app.get("/api/data-monitoring/stats")
+def get_data_monitoring_stats(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        # Construir query base
+        stmt_app = select(DataMonitoring.app, func.count(DataMonitoring.id)).group_by(DataMonitoring.app)
+        stmt_server = select(DataMonitoring.server_id, func.count(DataMonitoring.id)).group_by(DataMonitoring.server_id)
+
+        if not user["is_admin"]:
+             u = sess.get(User, user["user_id"])
+             if not u:
+                 return {"by_app": [], "by_server": []}
+             server_ids = [s.server_id for s in u.servers]
+             stmt_app = stmt_app.where(DataMonitoring.server_id.in_(server_ids))
+             stmt_server = stmt_server.where(DataMonitoring.server_id.in_(server_ids))
+        
+        by_app = sess.execute(stmt_app).all()
+        by_server = sess.execute(stmt_server).all()
+        
+        return {
+            "by_app": [{"label": r[0], "count": r[1]} for r in by_app],
+            "by_server": [{"label": r[0], "count": r[1]} for r in by_server]
+        }
+
 @app.get("/api/servers")
 def list_servers(user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
@@ -809,19 +832,124 @@ def verify_webhook(token: str = Query(...)):
 @app.post("/api/webhook")
 async def receive_webhook(request: Request, token: str = Query(...)):
     """
-    Recibe datos vía Webhook.
+    Recibe datos vía Webhook para auditoría (IDataMonitoring).
+    Valida que el token corresponda a un servidor registrado y que tenga habilitado el webhook.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    with Session(engine) as sess:
+        # 1. Validar token del servidor
+        server = sess.execute(select(Server).where(Server.token == token)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(status_code=403, detail="Invalid token")
+            
+        # 2. Validar si tiene habilitado el monitoreo
+        if not server.webhook_enabled:
+             raise HTTPException(status_code=403, detail="Webhook data collection is disabled for this server")
+
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+        # 3. Validar payload (opcionalmente con Pydantic, aquí lo hacemos manual/flexible o usamos DataMonitoringSchema)
+        # Intentamos parsear con Pydantic para validación
+        try:
+            data = DataMonitoringSchema(**body)
+        except Exception as e:
+            # Si el payload no coincide con IDataMonitoring, lo rechazamos o lo guardamos como 'raw' (pero el requerimiento es específico)
+            logger.warning(f"Webhook payload validation failed: {e}")
+            raise HTTPException(status_code=422, detail=f"Invalid payload structure: {str(e)}")
+            
+        # 4. Guardar en DB
+        new_record = DataMonitoring(
+            server_id=server.server_id,
+            app=data.app,
+            cash_register_number=data.cashRegisterNumber,
+            user_name=data.userName,
+            flow=data.flow,
+            patent=data.patent,
+            vehicle_type=data.vehicleType,
+            product=data.product,
+            entity_id=data.entityId,
+            working_day=data.workingDay,
+            client_created_at=datetime.fromisoformat(data.createdAt.replace('Z', '+00:00')) if data.createdAt else None
+        )
+        sess.add(new_record)
+        sess.commit()
         
-    logger.info(f"Webhook Received - Token: {token} - Body: {body}")
+        logger.info(f"DataMonitoring stored for server {server.server_id}")
     
-    # Aquí puedes agregar lógica para procesar el webhook
-    # Por ejemplo, verificar el token contra la base de datos o disparar una alerta
-    
-    return {"status": "received", "token_received": token, "data_size": len(str(body))}
+    return {"status": "received", "server_id": server.server_id}
+
+# --- Data Monitoring Endpoints ---
+
+@app.get("/api/servers/{server_id}/data-monitoring", response_model=List[DataMonitoringResponse])
+def get_server_monitoring_data(
+    server_id: str, 
+    start_date: Optional[str] = None, 
+    end_date: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(get_current_user_from_token)
+):
+    """
+    Obtiene los datos de monitoreo para un servidor (para gráficos).
+    """
+    with Session(engine) as sess:
+        # Verificar acceso
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Server not found")
+            
+        if not user["is_admin"]:
+            # Verificar asignación
+            link = sess.execute(
+                select(UserServerLink)
+                .where(UserServerLink.user_id == user["user_id"])
+                .where(UserServerLink.server_id == srv.id)
+            ).scalar_one_or_none()
+            if not link:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        query = select(DataMonitoring).where(DataMonitoring.server_id == server_id)
+        
+        if start_date:
+            try:
+                dt_start = datetime.fromisoformat(start_date)
+                query = query.where(DataMonitoring.created_at >= dt_start)
+            except: pass
+            
+        if end_date:
+            try:
+                dt_end = datetime.fromisoformat(end_date)
+                query = query.where(DataMonitoring.created_at <= dt_end)
+            except: pass
+            
+        query = query.order_by(DataMonitoring.created_at.desc()).limit(limit)
+        
+        results = sess.execute(query).scalars().all()
+        return results
+
+@app.put("/api/servers/{server_id}/webhook-config")
+def update_server_webhook_config(
+    server_id: str, 
+    payload: ServerWebhookConfigUpdate, 
+    user: dict = Depends(require_admin)
+):
+    """
+    Activa o desactiva la recepción de datos vía webhook para un servidor.
+    """
+    with Session(engine) as sess:
+        srv = sess.execute(select(Server).where(Server.server_id == server_id)).scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=404, detail="Server not found")
+            
+        srv.webhook_enabled = payload.webhook_enabled
+        sess.commit()
+        
+        status_msg = "enabled" if srv.webhook_enabled else "disabled"
+        log_audit(sess, "update_webhook_config", "server", server_id, {"enabled": srv.webhook_enabled}, user["email"])
+        
+        return {"status": "updated", "server_id": server_id, "webhook_enabled": srv.webhook_enabled}
+
 
 # --- User Personal Thresholds ---
 

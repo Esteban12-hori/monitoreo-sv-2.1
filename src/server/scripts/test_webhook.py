@@ -43,19 +43,32 @@ def test_webhook_get(token):
 
 def test_webhook_post(token):
     print(f"\n--- 3. Testing Webhook Data (POST) ---")
-    test_token = "test123456"
+    # Need a valid server token here, assuming 'test123456' is associated with a server in DB or needs to be registered
+    # Note: The backend now checks if token exists in DB and if webhook_enabled is True.
+    # So this test might fail if 'test123456' is not a valid server token.
+    test_token = "test123456" 
     url = f"{WEBHOOK_URL}?token={test_token}"
+    
+    # Payload matching IDataMonitoring interface
     payload = {
-        "event": "alert",
-        "server": "server-01",
-        "metric": "cpu",
-        "value": 95.5
+        "app": "POS-System",
+        "cashRegisterNumber": 1,
+        "userName": "John Doe",
+        "flow": "Sale",
+        "patent": "ABC-123",
+        "vehicleType": "Car",
+        "product": "Gasoline",
+        "createdAt": "2023-10-27T10:00:00Z",
+        "entityId": "store-001",
+        "workingDay": "2023-10-27"
     }
     
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         print("Webhook POST Success!")
         print(f"Response: {response.json()}")
+    elif response.status_code == 403:
+         print(f"Webhook POST Forbidden: {response.text} (Check if token is valid and webhook is enabled)")
     else:
         print(f"Webhook POST Failed: {response.status_code} - {response.text}")
 

@@ -25,6 +25,7 @@ class Server(Base):
     report_interval = Column(Integer, default=2400) # Segundos
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     group_name = Column(String(255), nullable=True, index=True) # Nuevo campo
+    webhook_enabled = Column(Boolean, default=False) # Habilita recepción de DataMonitoring
 
     # Relación a través de UserServerLink
     user_links = relationship("UserServerLink", back_populates="server", cascade="all, delete-orphan")
@@ -226,3 +227,26 @@ class AuditLog(Base):
     changes = Column(Text, nullable=True) # JSON details
     user_email = Column(String(255), nullable=True) # Who did it
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataMonitoring(Base):
+    __tablename__ = "data_monitoring"
+    id = Column(Integer, primary_key=True)
+    server_id = Column(String(255), index=True, nullable=False) # No ForeignKey to allow fast inserts, validated in logic
+    
+    app = Column(String(100), nullable=False)
+    cash_register_number = Column(Integer, nullable=True)
+    user_name = Column(String(255), nullable=True)
+    flow = Column(String(255), nullable=True)
+    patent = Column(String(50), nullable=True)
+    vehicle_type = Column(String(100), nullable=True)
+    product = Column(String(255), nullable=True)
+    entity_id = Column(String(255), nullable=True)
+    working_day = Column(String(255), nullable=True)
+    
+    # Este es el 'createdAt' del payload (cuando ocurrió el evento en el cliente)
+    client_created_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Este es el 'createdAt' de inserción en DB
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
