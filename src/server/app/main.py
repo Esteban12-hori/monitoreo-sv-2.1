@@ -787,17 +787,41 @@ def import_thresholds(payload: List[ServerThresholdImport], user: dict = Depends
             t.memory_threshold = item.memory_threshold
             t.disk_threshold = item.disk_threshold
             
-            # Update cache immediately
-            _threshold_cache[item.server_id] = {
-                "cpu": t.cpu_threshold,
-                "memory": t.memory_threshold,
-                "disk": t.disk_threshold
-            }
             count += 1
         
-        log_audit(sess, "import", "threshold", "bulk", {"count": count}, user["email"])
         sess.commit()
+        
+        # Clear cache to force reload
+        _threshold_cache.clear()
+        
         return {"status": "imported", "count": count}
+
+# --- Webhook Endpoint ---
+
+@app.get("/api/webhook")
+def verify_webhook(token: str = Query(...)):
+    """
+    Verifica que el webhook esté activo y el token sea recibido correctamente.
+    """
+    logger.info(f"Webhook Verification - Token: {token}")
+    return {"status": "active", "message": "Webhook endpoint is ready", "token_received": token}
+
+@app.post("/api/webhook")
+async def receive_webhook(request: Request, token: str = Query(...)):
+    """
+    Recibe datos vía Webhook.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    logger.info(f"Webhook Received - Token: {token} - Body: {body}")
+    
+    # Aquí puedes agregar lógica para procesar el webhook
+    # Por ejemplo, verificar el token contra la base de datos o disparar una alerta
+    
+    return {"status": "received", "token_received": token, "data_size": len(str(body))}
 
 # --- User Personal Thresholds ---
 
