@@ -26,6 +26,12 @@ sudo -u azureuser PYTHONPATH=/opt/monitoreo-sv-2.1 /opt/monitoreo-sv-2.1/src/ser
 123456
 EOF
 
+echo "👤 Creando usuario Joaquin (joaquinesteban.x@gmail.com / admin1234)..."
+sudo -u azureuser PYTHONPATH=/opt/monitoreo-sv-2.1 /opt/monitoreo-sv-2.1/src/server/.venv/bin/python -m scripts.create_users_manual --email joaquinesteban.x@gmail.com --name "Joaquin Esteban" --admin <<EOF
+admin1234
+admin1234
+EOF
+
 # 3. Copiar archivo de servicio corregido
 if [ -f "/opt/monitoreo-sv-2.1/deploy/systemd/monitor-backend.service" ]; then
     echo "⚙️ Actualizando servicio systemd..."
