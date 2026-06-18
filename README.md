@@ -75,6 +75,24 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - Tráfico por interfaz de red.
 - Paquetes perdidos y métricas vía SNMP para switches y routers.
 
+## 🖥️ Gestión Proxmox (Nuevo)
+
+Operación de infraestructura Proxmox VE desde el panel `/admin/proxmox`, **sin
+usar la API HTTP**: el backend ejecuta los CLI nativos (`qm`, `pct`, `vzdump`,
+`wg`) por SSH. Ver la [documentación completa](docs/proxmox.md).
+
+- **Recursos hardware**: modifica cores/memoria/disco de VMs (qemu) y contenedores (LXC).
+- **Snapshots**: crea, lista, restaura (rollback) y elimina instantáneas de cualquier guest.
+- **Backups programados**: `vzdump` con cron (APScheduler) y **autodetección de
+  servidores de base de datos** a partir de los servicios monitoreados.
+- **Migración segura**: vincula nodos mediante un **túnel WireGuard** cifrado y
+  migra cargas de trabajo (vzdump → transferencia por el túnel → restore),
+  garantizando confidencialidad e integridad de los datos.
+
+> Seguridad: solo admin, credenciales y claves privadas cifradas (Fernet),
+> validación estricta anti-inyección, verificación de host key SSH (TOFU) y
+> auditoría de todas las operaciones.
+
 ## 🔐 Seguridad y Control de Acceso
 
 - Roles definidos: Admin, Operador y Usuario.
@@ -163,6 +181,7 @@ PYTHONPATH=. uvicorn src.server.app.main:app --host 0.0.0.0 --port 8000 --reload
 > - `ALLOWED_HOSTS` (hosts permitidos, separados por comas)
 > - `SESSION_TTL_HOURS` (vida de las sesiones; por defecto 168 = 7 días)
 > - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (para el admin inicial; se forzará el cambio de contraseña en el primer login)
+> - `WG_TUNNEL_PREFIX` / `WG_LISTEN_PORT` (túnel WireGuard de migración Proxmox; ver [docs/proxmox.md](docs/proxmox.md))
 
 ### Frontend
 ```bash

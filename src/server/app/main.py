@@ -35,6 +35,15 @@ from .schemas import (
 from .email_utils import send_alert_email
 from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
 from .security import encrypt_password, decrypt_password
+from .models import ProxmoxNode, ProxmoxGuest, BackupSchedule, BackupJob, NodeLink, SnapshotRecord
+from .schemas import (
+    ProxmoxNodeCreate, ProxmoxNodeResponse, ProxmoxGuestResponse, GuestLinkUpdate,
+    GuestResourceUpdate, SnapshotCreate, SnapshotResponse, BackupScheduleCreate,
+    BackupScheduleUpdate, BackupScheduleResponse, BackupRunRequest, BackupJobResponse,
+    NodeLinkCreate, NodeLinkResponse, MigrateRequest
+)
+from .proxmox import service as pmx_service, wireguard as pmx_wg, scheduler as pmx_scheduler, dbdetect as pmx_dbdetect
+from .proxmox.ssh_executor import get_host_fingerprint, SSHCommandError
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -251,6 +260,20 @@ def startup():
             ensure_default_alerts(sess)
     except Exception as e:
         print(f"Advertencia en startup: {e}")
+
+    # Iniciar el scheduler de backups Proxmox (no bloquea si APScheduler falta)
+    try:
+        pmx_scheduler.init_scheduler()
+    except Exception as e:
+        print(f"Advertencia iniciando scheduler de backups: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown():
+    try:
+        pmx_scheduler.shutdown_scheduler()
+    except Exception:
+        pass
 
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
@@ -1801,6 +1824,380 @@ def set_user_server_threshold(payload: UserServerThresholdUpdate, user: dict = D
         sess.commit()
         sess.refresh(ut)
         return ut
+
+
+# ============================================================
+# --- Gestión Proxmox (SSH + WireGuard) ---
+# Todos los endpoints requieren admin y registran auditoría.
+# ============================================================
+
+def _pmx_get_node(sess: Session, node_id: int) -> ProxmoxNode:
+    node = sess.get(ProxmoxNode, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Nodo Proxmox no encontrado")
+    return node
+
+
+def _pmx_get_guest(sess: Session, guest_id: int) -> ProxmoxGuest:
+    guest = sess.get(ProxmoxGuest, guest_id)
+    if not guest:
+        raise HTTPException(status_code=404, detail="Guest no encontrado")
+    return guest
+
+
+# --- Nodos ---
+
+@app.get("/api/proxmox/nodes", response_model=List[ProxmoxNodeResponse])
+def pmx_list_nodes(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(ProxmoxNode)).scalars().all()
+
+
+@app.post("/api/proxmox/nodes", response_model=ProxmoxNodeResponse)
+def pmx_create_node(payload: ProxmoxNodeCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        existing = sess.execute(select(ProxmoxNode).where(ProxmoxNode.name == payload.name)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="Ya existe un nodo con ese nombre")
+        node = ProxmoxNode(
+            name=payload.name,
+            hostname=payload.hostname,
+            ssh_port=payload.ssh_port,
+            ssh_user=payload.ssh_user,
+            auth_type=payload.auth_type,
+            secret_encrypted=encrypt_password(payload.secret),
+            use_sudo=payload.use_sudo,
+        )
+        sess.add(node)
+        sess.commit()
+        sess.refresh(node)
+        # Best-effort: registrar la huella de host key (TOFU)
+        try:
+            node.host_key_fingerprint = get_host_fingerprint(node)
+            sess.commit()
+            sess.refresh(node)
+        except Exception as e:
+            logger.warning(f"No se pudo obtener la host key de {node.hostname}: {e}")
+        log_audit(sess, "create", "proxmox_node", node.name, {"hostname": node.hostname}, user["email"])
+        sess.commit()
+        sess.refresh(node)
+        return node
+
+
+@app.delete("/api/proxmox/nodes/{node_id}")
+def pmx_delete_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        name = node.name
+        sess.delete(node)
+        log_audit(sess, "delete", "proxmox_node", name, None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/nodes/{node_id}/test")
+def pmx_test_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        try:
+            version = pmx_service.test_connection(node)
+        except SSHCommandError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"status": "ok", "version": version}
+
+
+@app.post("/api/proxmox/nodes/{node_id}/sync")
+def pmx_sync_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        try:
+            guests = pmx_service.list_guests(node)
+        except SSHCommandError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        # Conjunto de servidores monitoreados para auto-vinculación por nombre
+        monitored = {s.server_id for s in sess.execute(select(Server)).scalars().all()}
+
+        seen = set()
+        for g in guests:
+            seen.add((g["vmid"], g["guest_type"]))
+            existing = sess.execute(
+                select(ProxmoxGuest).where(
+                    ProxmoxGuest.node_id == node.id,
+                    ProxmoxGuest.vmid == g["vmid"],
+                    ProxmoxGuest.guest_type == g["guest_type"],
+                )
+            ).scalar_one_or_none()
+            if not existing:
+                existing = ProxmoxGuest(node_id=node.id, vmid=g["vmid"], guest_type=g["guest_type"])
+                sess.add(existing)
+            existing.name = g.get("name")
+            existing.status = g.get("status")
+            existing.last_synced = datetime.utcnow()
+            # Auto-vincular si el nombre coincide con un servidor monitoreado
+            if existing.linked_server_id is None and g.get("name") in monitored:
+                existing.linked_server_id = g.get("name")
+        sess.commit()
+
+        # Refrescar autodetección de BD
+        try:
+            pmx_dbdetect.detect_db_guests(sess)
+        except Exception as e:
+            logger.warning(f"Autodetección BD falló: {e}")
+
+        log_audit(sess, "sync", "proxmox_node", node.name, {"guests": len(guests)}, user["email"])
+        sess.commit()
+        return {"status": "synced", "count": len(guests)}
+
+
+# --- Guests: inventario, recursos, vinculación ---
+
+@app.get("/api/proxmox/nodes/{node_id}/guests", response_model=List[ProxmoxGuestResponse])
+def pmx_list_guests(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        _pmx_get_node(sess, node_id)
+        return sess.execute(select(ProxmoxGuest).where(ProxmoxGuest.node_id == node_id)).scalars().all()
+
+
+@app.put("/api/proxmox/guests/{guest_id}/resources")
+def pmx_update_resources(guest_id: int, payload: GuestResourceUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.set_resources(
+            node, guest.vmid, guest.guest_type,
+            cores=payload.cores, memory=payload.memory,
+            disk=payload.disk, disk_size=payload.disk_size,
+        )
+        log_audit(sess, "update_resources", "proxmox_guest", str(guest.vmid),
+                  payload.dict(exclude_none=True), user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.put("/api/proxmox/guests/{guest_id}/link", response_model=ProxmoxGuestResponse)
+def pmx_link_guest(guest_id: int, payload: GuestLinkUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        guest.linked_server_id = payload.linked_server_id
+        # Reevaluar BD con el nuevo vínculo
+        if payload.linked_server_id:
+            guest.is_db = pmx_dbdetect.server_runs_db(sess, payload.linked_server_id)
+        else:
+            guest.is_db = False
+        sess.commit()
+        sess.refresh(guest)
+        return guest
+
+
+# --- Snapshots ---
+
+@app.get("/api/proxmox/guests/{guest_id}/snapshots", response_model=List[SnapshotResponse])
+def pmx_list_snapshots(guest_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        return pmx_service.list_snapshots(node, guest.vmid, guest.guest_type)
+
+
+@app.post("/api/proxmox/guests/{guest_id}/snapshots")
+def pmx_create_snapshot(guest_id: int, payload: SnapshotCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.create_snapshot(node, guest.vmid, guest.guest_type, payload.name, payload.description)
+        sess.add(SnapshotRecord(node_id=node.id, vmid=guest.vmid, name=payload.name,
+                                description=payload.description, created_by=user["email"]))
+        log_audit(sess, "create_snapshot", "proxmox_guest", str(guest.vmid), {"name": payload.name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.post("/api/proxmox/guests/{guest_id}/snapshots/{name}/rollback")
+def pmx_rollback_snapshot(guest_id: int, name: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.rollback_snapshot(node, guest.vmid, guest.guest_type, name)
+        log_audit(sess, "rollback_snapshot", "proxmox_guest", str(guest.vmid), {"name": name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.delete("/api/proxmox/guests/{guest_id}/snapshots/{name}")
+def pmx_delete_snapshot(guest_id: int, name: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.delete_snapshot(node, guest.vmid, guest.guest_type, name)
+        log_audit(sess, "delete_snapshot", "proxmox_guest", str(guest.vmid), {"name": name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+# --- Backups programados ---
+
+@app.get("/api/proxmox/backup-schedules", response_model=List[BackupScheduleResponse])
+def pmx_list_schedules(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(BackupSchedule)).scalars().all()
+
+
+@app.post("/api/proxmox/backup-schedules", response_model=BackupScheduleResponse)
+def pmx_create_schedule(payload: BackupScheduleCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = BackupSchedule(
+            name=payload.name, node_id=payload.node_id, cron_expr=payload.cron_expr,
+            storage=payload.storage, mode=payload.mode, keep_last=payload.keep_last,
+            only_db=payload.only_db, enabled=payload.enabled,
+        )
+        sess.add(sched)
+        sess.commit()
+        sess.refresh(sched)
+        pmx_scheduler.add_schedule_job(sched)
+        log_audit(sess, "create", "backup_schedule", sched.name, {"cron": sched.cron_expr}, user["email"])
+        sess.commit()
+        sess.refresh(sched)
+        return sched
+
+
+@app.put("/api/proxmox/backup-schedules/{schedule_id}", response_model=BackupScheduleResponse)
+def pmx_update_schedule(schedule_id: int, payload: BackupScheduleUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = sess.get(BackupSchedule, schedule_id)
+        if not sched:
+            raise HTTPException(status_code=404, detail="Schedule no encontrado")
+        for field, value in payload.dict(exclude_unset=True).items():
+            setattr(sched, field, value)
+        sess.commit()
+        sess.refresh(sched)
+        # Re-registrar el job
+        pmx_scheduler.remove_schedule_job(sched.id)
+        if sched.enabled:
+            pmx_scheduler.add_schedule_job(sched)
+        log_audit(sess, "update", "backup_schedule", sched.name, payload.dict(exclude_unset=True), user["email"])
+        sess.commit()
+        sess.refresh(sched)
+        return sched
+
+
+@app.delete("/api/proxmox/backup-schedules/{schedule_id}")
+def pmx_delete_schedule(schedule_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = sess.get(BackupSchedule, schedule_id)
+        if not sched:
+            raise HTTPException(status_code=404, detail="Schedule no encontrado")
+        name = sched.name
+        sess.delete(sched)
+        pmx_scheduler.remove_schedule_job(schedule_id)
+        log_audit(sess, "delete", "backup_schedule", name, None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/backups/run", response_model=BackupJobResponse)
+def pmx_run_backup(payload: BackupRunRequest, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, payload.node_id)
+        job = BackupJob(node_id=node.id, vmid=payload.vmid, storage=payload.storage, status="running")
+        sess.add(job)
+        sess.commit()
+        sess.refresh(job)
+        try:
+            rc, out, err = pmx_service.run_vzdump(node, payload.vmid, payload.storage, payload.mode)
+            job.status = "ok" if rc == 0 else "error"
+            job.output_log = (out or "") + (("\n" + err) if err else "")
+        except HTTPException as e:
+            job.status = "error"
+            job.output_log = str(e.detail)
+        except Exception as e:
+            job.status = "error"
+            job.output_log = str(e)
+        job.finished_at = datetime.utcnow()
+        log_audit(sess, "run_backup", "proxmox_guest", str(payload.vmid), {"storage": payload.storage}, user["email"])
+        sess.commit()
+        sess.refresh(job)
+        return job
+
+
+@app.get("/api/proxmox/backup-jobs", response_model=List[BackupJobResponse])
+def pmx_list_backup_jobs(limit: int = 100, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(
+            select(BackupJob).order_by(BackupJob.id.desc()).limit(limit)
+        ).scalars().all()
+
+
+# --- Vinculación de nodos (túnel WireGuard) y migración ---
+
+@app.get("/api/proxmox/links", response_model=List[NodeLinkResponse])
+def pmx_list_links(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(NodeLink)).scalars().all()
+
+
+@app.post("/api/proxmox/links", response_model=NodeLinkResponse)
+def pmx_create_link(payload: NodeLinkCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        if payload.source_node_id == payload.target_node_id:
+            raise HTTPException(status_code=400, detail="El nodo origen y destino deben ser distintos")
+        source = _pmx_get_node(sess, payload.source_node_id)
+        target = _pmx_get_node(sess, payload.target_node_id)
+        link = NodeLink(
+            source_node_id=source.id, target_node_id=target.id,
+            wg_interface=payload.wg_interface, listen_port=payload.listen_port,
+        )
+        sess.add(link)
+        sess.commit()
+        sess.refresh(link)
+        try:
+            pmx_wg.create_link(link, source, target)
+        except HTTPException:
+            link.status = "error"
+            sess.commit()
+            raise
+        log_audit(sess, "create_link", "node_link", f"{source.name}->{target.name}",
+                  {"interface": link.wg_interface}, user["email"])
+        sess.commit()
+        sess.refresh(link)
+        return link
+
+
+@app.delete("/api/proxmox/links/{link_id}")
+def pmx_delete_link(link_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        link = sess.get(NodeLink, link_id)
+        if not link:
+            raise HTTPException(status_code=404, detail="Link no encontrado")
+        source = sess.get(ProxmoxNode, link.source_node_id)
+        target = sess.get(ProxmoxNode, link.target_node_id)
+        try:
+            if source and target:
+                pmx_wg.teardown_link(link, source, target)
+        except Exception as e:
+            logger.warning(f"Error bajando túnel: {e}")
+        sess.delete(link)
+        log_audit(sess, "delete_link", "node_link", str(link_id), None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/migrate")
+def pmx_migrate(payload: MigrateRequest, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        link = sess.get(NodeLink, payload.link_id)
+        if not link:
+            raise HTTPException(status_code=404, detail="Link no encontrado")
+        source = _pmx_get_node(sess, link.source_node_id)
+        target = _pmx_get_node(sess, link.target_node_id)
+        out = pmx_wg.migrate_guest(
+            link, source, target, payload.vmid, payload.guest_type,
+            payload.storage, online=payload.online,
+        )
+        log_audit(sess, "migrate", "proxmox_guest", str(payload.vmid),
+                  {"from": source.name, "to": target.name}, user["email"])
+        sess.commit()
+        return {"status": "migrated", "output": out}
 
 
 # --- Servir Frontend ---

@@ -6,6 +6,7 @@ import Setup from '../views/Setup.vue'
 import AdminUsers from '../views/AdminUsers.vue'
 import AdminGroups from '../views/AdminGroups.vue'
 import AdminLogs from '../views/AdminLogs.vue'
+import ProxmoxManager from '../views/ProxmoxManager.vue'
 import ServerDetail from '../views/ServerDetail.vue'
 import ChangePasswordModal from '../components/ChangePasswordModal.vue'
 
@@ -54,6 +55,12 @@ const routes = [
     path: '/admin/logs',
     name: 'AdminLogs',
     component: AdminLogs,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/admin/proxmox',
+    name: 'ProxmoxManager',
+    component: ProxmoxManager,
     meta: { requiresAuth: true, requiresAdmin: true }
   },
   {
