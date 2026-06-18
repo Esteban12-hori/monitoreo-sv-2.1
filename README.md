@@ -13,7 +13,7 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - **Métricas en Tiempo Real**: CPU, RAM, Disco, Red y estado de servicios (Docker, Redis, etc.).
 - **Agente Ligero**: Agente en Python optimizado con instalación interactiva fácil.
 - **Alertas Inteligentes**: Notificaciones SMTP configurables.
-- **Seguridad**: Autenticación JWT y gestión de roles.
+- **Seguridad**: Autenticación basada en tokens de sesión (persistidos en BD, con expiración configurable) y gestión de roles.
 - **Fácil Despliegue**: Soporte completo para Docker y scripts de instalación automatizados.
 
 ## 🧩 Personalización por Usuario (Nuevo)
@@ -108,15 +108,14 @@ Si ya tienes el proyecto descargado y quieres actualizarlo:
 # 1. Obtener los últimos cambios
 git pull origin main
 
-# 2. Actualizar dependencias del Backend
-cd src/server
-pip install -r requirements.txt
+# 2. Actualizar dependencias del Backend (desde la raíz del repositorio)
+pip install -r src/server/requirements.txt
 
 # 3. Aplicar migraciones de base de datos (si las hay)
-python scripts/migrate_db.py  # o el script correspondiente
+PYTHONPATH=. python src/server/scripts/migrate_db.py  # o el script correspondiente
 
 # 4. Actualizar dependencias del Frontend
-cd ../client
+cd src/client
 npm install
 npm run build
 ```
@@ -139,17 +138,31 @@ La forma más sencilla de iniciar el servidor (Backend + Frontend).
 ## 🔧 Instalación Manual (Desarrollo)
 
 ### Backend
+> El backend importa `config.settings` desde la raíz del proyecto, por lo que
+> debe ejecutarse **desde la raíz del repositorio** (con `PYTHONPATH=.`), no desde `src/server`.
+
 ```bash
-cd src/server
+# Desde la raíz del repositorio
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
 # Linux/Mac
 source .venv/bin/activate
 
-pip install -r requirements.txt
-python app/main.py
+pip install -r src/server/requirements.txt
+
+# Iniciar el servidor (el módulo es una app FastAPI, se sirve con uvicorn)
+PYTHONPATH=. uvicorn src.server.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+> **Variables de entorno recomendadas en producción:**
+> - `ENV=production`
+> - `ENCRYPTION_KEY` (obligatoria en producción; genérala con
+>   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
+> - `ALLOWED_ORIGINS` (dominios concretos del frontend, separados por comas)
+> - `ALLOWED_HOSTS` (hosts permitidos, separados por comas)
+> - `SESSION_TTL_HOURS` (vida de las sesiones; por defecto 168 = 7 días)
+> - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (para el admin inicial; se forzará el cambio de contraseña en el primer login)
 
 ### Frontend
 ```bash

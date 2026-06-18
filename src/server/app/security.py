@@ -1,5 +1,6 @@
 import os
 import base64
+import hashlib
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 import logging
@@ -10,22 +11,33 @@ load_dotenv()
 
 def get_encryption_key():
     """
-    Retrieves the encryption key from environment variables.
-    If not found, it generates one and logs a warning (in prod, this should be fixed).
+    Retrieves the Fernet encryption key from the ENCRYPTION_KEY env variable.
+
+    In production/testing the key MUST be provided; otherwise we raise an error
+    instead of silently falling back to a publicly-known key (which would make
+    every stored secret trivially decryptable). Only in development we allow a
+    deterministic fallback derived from the host, with a loud warning.
     """
     key = os.getenv("ENCRYPTION_KEY")
-    if not key:
-        # Fallback for dev/demo if not set, but this is volatile!
-        # Ideally we want to ensure this is set.
-        # We'll use a hardcoded fallback for development stability if not provided,
-        # BUT this defeats the purpose of security.
-        # Better: Generate and tell user to set it.
-        # For the "Wizard", maybe we generate it and store it in the DB? No, key encrypts DB data.
-        # We will use a derived key from a hardcoded secret if missing, with a loud warning.
-        logger.warning("ENCRYPTION_KEY not found in env. Using default dev key (INSECURE).")
-        # Default dev key (32 url-safe base64-encoded bytes)
-        return b"ZcTj8yXQ5zK9r1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h=" 
-    return key.encode() if isinstance(key, str) else key
+    if key:
+        return key.encode() if isinstance(key, str) else key
+
+    env = os.getenv("ENV", "development").lower()
+    if env != "development":
+        raise RuntimeError(
+            "ENCRYPTION_KEY no está configurada. Genera una con "
+            "`python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\"` y expórtala en el entorno."
+        )
+
+    # Solo en desarrollo: clave derivada de forma determinista (NO segura para producción).
+    logger.warning(
+        "ENCRYPTION_KEY no encontrada. Usando clave de desarrollo derivada (INSEGURA). "
+        "Configura ENCRYPTION_KEY antes de desplegar en producción."
+    )
+    seed = (os.getenv("USER", "") + "monitoreo-dev-fallback").encode("utf-8")
+    digest = hashlib.sha256(seed).digest()
+    return base64.urlsafe_b64encode(digest)
 
 def encrypt_password(password: str) -> str:
     """Encrypts a password using Fernet."""

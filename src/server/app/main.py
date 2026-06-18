@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import uuid
 import unicodedata
@@ -19,7 +19,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
+from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, ALLOWED_HOSTS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
 from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule, UserServerThreshold, DataMonitoring
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
@@ -76,8 +76,8 @@ app.add_middleware(SlowAPIMiddleware)
 
 # --- Security Middlewares ---
 app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["localhost", "127.0.0.1", "::1", "*"]
+    TrustedHostMiddleware,
+    allowed_hosts=ALLOWED_HOSTS
 )
 
 @app.middleware("http")
@@ -94,10 +94,15 @@ async def add_security_headers(request: Request, call_next):
     )
     return response
 
+# Si se permite cualquier origen ("*"), no se pueden habilitar credenciales:
+# el navegador rechaza la combinación wildcard + credentials. Como la
+# autenticación viaja en la cabecera X-Dashboard-Token (no en cookies),
+# deshabilitar credentials en ese caso es seguro y evita una config inválida.
+_allow_credentials = "*" not in ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"]
 )
@@ -260,6 +265,9 @@ _alert_state: dict[tuple[str, str], float] = {}
 _advanced_alert_state: dict[str, dict] = {}
 ALERT_COOLDOWN = 3600  # 1 hora
 
+# Tiempo de vida de las sesiones (horas). Configurable vía env.
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "168"))  # 7 días por defecto
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     try:
@@ -280,7 +288,25 @@ def get_current_user_from_token(x_dashboard_token: Optional[str] = Header(None))
         
         if not session_record:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
-        
+
+        # Validar expiración de la sesión (TTL)
+        created = session_record.created_at
+        if created is not None:
+            try:
+                # Normalizar a naive UTC para comparar de forma segura
+                if created.tzinfo is not None:
+                    created = created.astimezone(timezone.utc).replace(tzinfo=None)
+                age = datetime.utcnow() - created
+                if age > timedelta(hours=SESSION_TTL_HOURS):
+                    sess.delete(session_record)
+                    sess.commit()
+                    raise HTTPException(status_code=401, detail="Session expired")
+            except HTTPException:
+                raise
+            except Exception:
+                # Si la comparación falla por algún motivo, no bloqueamos el acceso
+                pass
+
         # Cargar usuario relacionado
         user = sess.get(User, session_record.user_id)
         if not user:
@@ -826,8 +852,9 @@ def verify_webhook(token: str = Query(...)):
     """
     Verifica que el webhook esté activo y el token sea recibido correctamente.
     """
-    logger.info(f"Webhook Verification - Token: {token}")
-    return {"status": "active", "message": "Webhook endpoint is ready", "token_received": token}
+    masked = (token[:4] + "***") if token else ""
+    logger.info(f"Webhook verification request received (token={masked})")
+    return {"status": "active", "message": "Webhook endpoint is ready"}
 
 @app.post("/api/webhook")
 async def receive_webhook(request: Request, token: str = Query(...)):
@@ -1740,26 +1767,26 @@ def preview_alert_decision(payload: AlertPreviewRequest, user: dict = Depends(re
 def get_user_server_threshold(server_id: str, user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         ut = sess.execute(select(UserServerThreshold).where(
-            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.user_id == user["user_id"],
             UserServerThreshold.server_id == server_id
         )).scalar_one_or_none()
-        
+
         if not ut:
             # Return empty/default structure if not found, with dummy id
-            return UserServerThresholdResponse(id=0, user_id=user["id"], server_id=server_id)
+            return UserServerThresholdResponse(id=0, user_id=user["user_id"], server_id=server_id)
         return ut
 
 @app.post("/api/user/thresholds", response_model=UserServerThresholdResponse)
 def set_user_server_threshold(payload: UserServerThresholdUpdate, user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         ut = sess.execute(select(UserServerThreshold).where(
-            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.user_id == user["user_id"],
             UserServerThreshold.server_id == payload.server_id
         )).scalar_one_or_none()
-        
+
         if not ut:
             ut = UserServerThreshold(
-                user_id=user["id"],
+                user_id=user["user_id"],
                 server_id=payload.server_id,
                 cpu_limit=payload.cpu_limit,
                 mem_limit=payload.mem_limit,

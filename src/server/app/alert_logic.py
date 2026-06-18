@@ -6,6 +6,7 @@ import time
 from .models import Server, AlertRecipient, User, AlertRule, NotificationRule, UserGroup
 from .email_utils import send_alert_email
 from .notification_utils import send_webhook_notification, send_sms_notification, send_whatsapp_notification
+from .alert_dispatcher import send_multichannel_alert
 
 def get_alert_recipients(sess: Session, server: Server, alert_type: str) -> tuple[list, list[str]]:
     applied_rules_info = []
