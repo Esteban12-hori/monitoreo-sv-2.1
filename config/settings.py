@@ -41,6 +41,10 @@ ALLOWED_HOSTS = [h.strip() for h in _hosts.split(",") if h.strip()] or ["*"]
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "500"))
 
+# Retención de datos históricos (días). 0 = sin purga.
+METRICS_RETENTION_DAYS = int(os.getenv("METRICS_RETENTION_DAYS", "30"))
+CHECK_RESULTS_RETENTION_DAYS = int(os.getenv("CHECK_RESULTS_RETENTION_DAYS", "30"))
+
 # Configuración de Email (SMTP)(Legacy Env Vars - now mostly in DB, but keeping for fallbacks/defaults if needed)
 # ... (User wants configuration in DB mostly, but encryption key here)
 

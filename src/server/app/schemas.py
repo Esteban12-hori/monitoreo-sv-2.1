@@ -518,3 +518,83 @@ class MigrateRequest(BaseModel):
     guest_type: str = Field(..., pattern="^(qemu|lxc)$")
     storage: str
     online: bool = False
+
+
+# --- Checks agentless ---
+
+class MonitoringCheckCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    check_type: str = Field(..., pattern="^(http|tcp|icmp)$")
+    target: str = Field(..., min_length=1, max_length=500)
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    interval_seconds: int = Field(60, ge=10, le=86400)
+    timeout_seconds: int = Field(10, ge=1, le=120)
+    expected_status: Optional[int] = Field(None, ge=100, le=599)
+    enabled: bool = True
+
+class MonitoringCheckUpdate(BaseModel):
+    name: Optional[str] = None
+    target: Optional[str] = None
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    interval_seconds: Optional[int] = Field(None, ge=10, le=86400)
+    timeout_seconds: Optional[int] = Field(None, ge=1, le=120)
+    expected_status: Optional[int] = Field(None, ge=100, le=599)
+    enabled: Optional[bool] = None
+
+class MonitoringCheckResponse(BaseModel):
+    id: int
+    name: str
+    check_type: str
+    target: str
+    port: Optional[int]
+    interval_seconds: int
+    timeout_seconds: int
+    expected_status: Optional[int]
+    enabled: bool
+    last_status: Optional[str]
+    last_latency_ms: Optional[float]
+    last_checked_at: Optional[datetime]
+    last_message: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class MonitoringCheckResultResponse(BaseModel):
+    id: int
+    check_id: int
+    status: str
+    latency_ms: Optional[float]
+    message: Optional[str]
+    ts: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Canales de notificación ---
+
+class NotificationChannelCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    channel_type: str = Field(..., pattern="^(slack|telegram|discord|webhook)$")
+    target: str = Field(..., min_length=1)   # webhook URL o token de bot (texto plano de entrada)
+    extra: Optional[str] = None              # chat_id para telegram
+    enabled: bool = True
+
+class NotificationChannelUpdate(BaseModel):
+    name: Optional[str] = None
+    target: Optional[str] = None
+    extra: Optional[str] = None
+    enabled: Optional[bool] = None
+
+class NotificationChannelResponse(BaseModel):
+    # No incluye 'target': el secreto nunca se devuelve.
+    id: int
+    name: str
+    channel_type: str
+    extra: Optional[str]
+    enabled: bool
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True

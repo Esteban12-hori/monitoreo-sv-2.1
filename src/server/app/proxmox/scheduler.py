@@ -130,8 +130,25 @@ def init_scheduler():
                 _add_job(_scheduler, sch)
             except Exception as e:
                 logger.error("Schedule %s inválido: %s", sch.id, e)
+
+    # Job recurrente: ejecutar los checks agentless que toquen según su intervalo.
+    try:
+        from ..monitoring.checks import run_all_due_checks
+        _scheduler.add_job(run_all_due_checks, "interval", seconds=30,
+                           id="agentless_checks", replace_existing=True)
+    except Exception as e:
+        logger.error("No se pudo registrar el runner de checks: %s", e)
+
+    # Job diario: purga de retención de históricos.
+    try:
+        from ..maintenance import purge_old_data
+        _scheduler.add_job(purge_old_data, "cron", hour=4, minute=0,
+                           id="data_retention", replace_existing=True)
+    except Exception as e:
+        logger.error("No se pudo registrar la purga de retención: %s", e)
+
     _scheduler.start()
-    logger.info("Scheduler de backups iniciado (%d jobs)", len(schedules))
+    logger.info("Scheduler iniciado (%d backups + checks + retención)", len(schedules))
     return _scheduler
 
 

@@ -344,3 +344,52 @@ class SnapshotRecord(Base):
     created_by = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
+# --- Checks agentless (monitoreo server-side) ---
+
+class MonitoringCheck(Base):
+    """Check de monitoreo ejecutado por el servidor (sin agente): HTTP/TCP/ICMP."""
+    __tablename__ = "monitoring_checks"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    check_type = Column(String(10), nullable=False)   # 'http' | 'tcp' | 'icmp'
+    target = Column(String(500), nullable=False)       # URL, host o host:port
+    port = Column(Integer, nullable=True)              # para tcp
+    interval_seconds = Column(Integer, default=60)
+    timeout_seconds = Column(Integer, default=10)
+    expected_status = Column(Integer, nullable=True)   # para http (ej. 200)
+    enabled = Column(Boolean, default=True)
+    # Estado más reciente (denormalizado para listados rápidos)
+    last_status = Column(String(20), nullable=True)    # 'up' | 'down' | 'unknown'
+    last_latency_ms = Column(Float, nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    last_message = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MonitoringCheckResult(Base):
+    """Historial de resultados de un check agentless."""
+    __tablename__ = "monitoring_check_results"
+    id = Column(Integer, primary_key=True)
+    check_id = Column(Integer, ForeignKey("monitoring_checks.id"), index=True, nullable=False)
+    status = Column(String(20), nullable=False)
+    latency_ms = Column(Float, nullable=True)
+    message = Column(String(500), nullable=True)
+    ts = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# --- Canales de notificación globales (Slack/Telegram/Discord/Webhook) ---
+
+class NotificationChannel(Base):
+    """Canal de notificación que recibe las alertas además del correo."""
+    __tablename__ = "notification_channels"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    channel_type = Column(String(20), nullable=False)   # 'slack' | 'telegram' | 'discord' | 'webhook'
+    # Webhook URL (slack/discord/webhook) o token de bot (telegram), cifrado.
+    target_encrypted = Column(Text, nullable=False)
+    # Para Telegram: chat_id destino.
+    extra = Column(String(255), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+

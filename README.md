@@ -75,6 +75,18 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - Tráfico por interfaz de red.
 - Paquetes perdidos y métricas vía SNMP para switches y routers.
 
+## 📡 Monitoreo agentless y Notificaciones (Nuevo)
+
+Panel `/admin/monitoring` (admin):
+
+- **Checks agentless**: monitoriza endpoints **HTTP/TCP/ICMP** desde el propio
+  servidor, sin instalar agente en el destino. Configurables desde la UI, con
+  ejecución programada, estado/latencia e historial.
+- **Canales de notificación**: Slack, Discord, Telegram y webhook genérico que
+  reciben las alertas además del correo (secretos cifrados; botón de prueba).
+- **Retención de datos**: purga automática (diaria) y manual de históricos.
+  Variables: `METRICS_RETENTION_DAYS` (def. 30) y `CHECK_RESULTS_RETENTION_DAYS`.
+
 ## 🖥️ Gestión Proxmox (Nuevo)
 
 Operación de infraestructura Proxmox VE desde el panel `/admin/proxmox`, **sin
@@ -182,6 +194,7 @@ PYTHONPATH=. uvicorn src.server.app.main:app --host 0.0.0.0 --port 8000 --reload
 > - `SESSION_TTL_HOURS` (vida de las sesiones; por defecto 168 = 7 días)
 > - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (para el admin inicial; se forzará el cambio de contraseña en el primer login)
 > - `WG_TUNNEL_PREFIX` / `WG_LISTEN_PORT` (túnel WireGuard de migración Proxmox; ver [docs/proxmox.md](docs/proxmox.md))
+> - `METRICS_RETENTION_DAYS` / `CHECK_RESULTS_RETENTION_DAYS` (retención de históricos; por defecto 30 días)
 
 ### Frontend
 ```bash

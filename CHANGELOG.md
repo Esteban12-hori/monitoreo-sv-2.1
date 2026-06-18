@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-06-18
+
+### Added
+- **Monitoreo agentless (server-side)**: nuevo panel `/admin/monitoring` con checks **HTTP/TCP/ICMP** configurables desde la UI y ejecutados por el backend (sin agente en el destino), con ejecución programada (APScheduler), estado/latencia e historial de resultados.
+- **Canales de notificación reales**: Slack, Discord, Telegram y webhook genérico; reciben las alertas además del correo. Secretos cifrados (Fernet) y endpoint de prueba.
+- **Retención de datos**: purga programada (diaria) e on-demand de `metrics` y resultados de checks, configurable vía `METRICS_RETENTION_DAYS` / `CHECK_RESULTS_RETENTION_DAYS` (evita el crecimiento ilimitado de la base de datos).
+
+### Changed
+- **CI**: ahora ejecuta **toda** la suite de pruebas (no solo `test_backend`), construye el frontend y audita dependencias (`pip-audit`).
+
+### Security
+- **CI**: se elimina la `ENCRYPTION_KEY` hardcodeada; ahora se genera una clave efímera por ejecución.
+
 ## [2.1.0] - 2026-06-18
 
 ### Added

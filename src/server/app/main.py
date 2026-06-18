@@ -36,6 +36,7 @@ from .email_utils import send_alert_email
 from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
 from .security import encrypt_password, decrypt_password
 from .models import ProxmoxNode, ProxmoxGuest, BackupSchedule, BackupJob, NodeLink, SnapshotRecord
+from .models import MonitoringCheck, MonitoringCheckResult, NotificationChannel
 from .schemas import (
     ProxmoxNodeCreate, ProxmoxNodeResponse, ProxmoxGuestResponse, GuestLinkUpdate,
     GuestResourceUpdate, SnapshotCreate, SnapshotResponse, BackupScheduleCreate,
@@ -44,6 +45,14 @@ from .schemas import (
 )
 from .proxmox import service as pmx_service, wireguard as pmx_wg, scheduler as pmx_scheduler, dbdetect as pmx_dbdetect
 from .proxmox.ssh_executor import get_host_fingerprint, SSHCommandError
+from .schemas import (
+    MonitoringCheckCreate, MonitoringCheckUpdate, MonitoringCheckResponse,
+    MonitoringCheckResultResponse, NotificationChannelCreate, NotificationChannelUpdate,
+    NotificationChannelResponse
+)
+from .monitoring import checks as mon_checks
+from .notifications import channels as notif_channels
+from . import maintenance
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -2198,6 +2207,155 @@ def pmx_migrate(payload: MigrateRequest, user: dict = Depends(require_admin)):
                   {"from": source.name, "to": target.name}, user["email"])
         sess.commit()
         return {"status": "migrated", "output": out}
+
+
+# ============================================================
+# --- Checks agentless (monitoreo server-side) ---
+# ============================================================
+
+@app.get("/api/monitoring/checks", response_model=List[MonitoringCheckResponse])
+def list_monitoring_checks(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        return sess.execute(select(MonitoringCheck)).scalars().all()
+
+
+@app.post("/api/monitoring/checks", response_model=MonitoringCheckResponse)
+def create_monitoring_check(payload: MonitoringCheckCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        check = MonitoringCheck(
+            name=payload.name, check_type=payload.check_type, target=payload.target,
+            port=payload.port, interval_seconds=payload.interval_seconds,
+            timeout_seconds=payload.timeout_seconds, expected_status=payload.expected_status,
+            enabled=payload.enabled,
+        )
+        sess.add(check)
+        log_audit(sess, "create", "monitoring_check", payload.name, {"type": payload.check_type}, user["email"])
+        sess.commit()
+        sess.refresh(check)
+        return check
+
+
+@app.put("/api/monitoring/checks/{check_id}", response_model=MonitoringCheckResponse)
+def update_monitoring_check(check_id: int, payload: MonitoringCheckUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        check = sess.get(MonitoringCheck, check_id)
+        if not check:
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+        for field, value in payload.dict(exclude_unset=True).items():
+            setattr(check, field, value)
+        sess.commit()
+        sess.refresh(check)
+        return check
+
+
+@app.delete("/api/monitoring/checks/{check_id}")
+def delete_monitoring_check(check_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        check = sess.get(MonitoringCheck, check_id)
+        if not check:
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+        sess.execute(delete(MonitoringCheckResult).where(MonitoringCheckResult.check_id == check_id))
+        sess.delete(check)
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/monitoring/checks/{check_id}/run")
+def run_monitoring_check(check_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        if not sess.get(MonitoringCheck, check_id):
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+    result = mon_checks.execute_and_store(check_id)
+    return {"status": "ok", "result": result}
+
+
+@app.get("/api/monitoring/checks/{check_id}/results", response_model=List[MonitoringCheckResultResponse])
+def list_check_results(check_id: int, limit: int = 100, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        return sess.execute(
+            select(MonitoringCheckResult)
+            .where(MonitoringCheckResult.check_id == check_id)
+            .order_by(MonitoringCheckResult.id.desc()).limit(limit)
+        ).scalars().all()
+
+
+# ============================================================
+# --- Canales de notificación ---
+# ============================================================
+
+@app.get("/api/admin/notification-channels", response_model=List[NotificationChannelResponse])
+def list_notification_channels(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(NotificationChannel)).scalars().all()
+
+
+@app.post("/api/admin/notification-channels", response_model=NotificationChannelResponse)
+def create_notification_channel(payload: NotificationChannelCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = NotificationChannel(
+            name=payload.name, channel_type=payload.channel_type,
+            target_encrypted=encrypt_password(payload.target),
+            extra=payload.extra, enabled=payload.enabled,
+        )
+        sess.add(channel)
+        log_audit(sess, "create", "notification_channel", payload.name, {"type": payload.channel_type}, user["email"])
+        sess.commit()
+        sess.refresh(channel)
+        return channel
+
+
+@app.put("/api/admin/notification-channels/{channel_id}", response_model=NotificationChannelResponse)
+def update_notification_channel(channel_id: int, payload: NotificationChannelUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        data = payload.dict(exclude_unset=True)
+        if "target" in data and data["target"]:
+            channel.target_encrypted = encrypt_password(data.pop("target"))
+        else:
+            data.pop("target", None)
+        for field, value in data.items():
+            setattr(channel, field, value)
+        sess.commit()
+        sess.refresh(channel)
+        return channel
+
+
+@app.delete("/api/admin/notification-channels/{channel_id}")
+def delete_notification_channel(channel_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        sess.delete(channel)
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/admin/notification-channels/{channel_id}/test")
+def test_notification_channel(channel_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        ok, detail = notif_channels.send_to_channel(channel, "🔔 Mensaje de prueba desde UpKeep")
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Envío falló: {detail}")
+    return {"status": "sent", "detail": detail}
+
+
+# ============================================================
+# --- Mantenimiento / retención ---
+# ============================================================
+
+@app.post("/api/admin/maintenance/purge")
+def purge_retention(user: dict = Depends(require_admin)):
+    deleted = maintenance.purge_old_data()
+    with Session(engine) as sess:
+        log_audit(sess, "purge", "maintenance", "retention", deleted, user["email"])
+        sess.commit()
+    return {"status": "ok", "deleted": deleted}
 
 
 # --- Servir Frontend ---
