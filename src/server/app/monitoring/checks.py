@@ -55,6 +55,12 @@ _ICMP_RE = re.compile(r"time[=<]([\d\.]+)\s*ms", re.IGNORECASE)
 
 
 def run_icmp_check(host: str, timeout: int = 10) -> dict:
+    # Defensa en profundidad: aunque el host se valida al crear el check, nunca
+    # ejecutamos ping con un host vacío o que empiece por '-' (que se
+    # interpretaría como una opción de ping, p. ej. `-f` flood).
+    host = (host or "").strip()
+    if not host or host.startswith("-"):
+        return {"status": "unknown", "latency_ms": None, "message": "host ICMP inválido"}
     param = "-n" if platform.system().lower() == "windows" else "-c"
     cmd = ["ping", param, "1", host]
     try:

@@ -519,6 +519,9 @@ class MigrateRequest(BaseModel):
     storage: str
     online: bool = False
 
+class GuestPowerRequest(BaseModel):
+    action: str = Field(..., pattern="^(start|stop|shutdown|reboot|suspend|resume)$")
+
 
 # --- Checks agentless ---
 
@@ -570,6 +573,40 @@ class MonitoringCheckResultResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Auto-descubrimiento de red ---
+
+class DiscoveryScanRequest(BaseModel):
+    cidr: str = Field(..., min_length=7, max_length=64)
+    ports: Optional[List[int]] = None
+    timeout: float = Field(0.5, ge=0.1, le=5.0)
+    use_icmp: bool = True
+    auto_create: bool = False   # crear checks agentless para los hosts vivos
+
+class DiscoveredHost(BaseModel):
+    host: str
+    open_ports: List[int] = []
+    method: Optional[str] = None
+
+class DiscoveryScanResponse(BaseModel):
+    cidr: str
+    scanned: int
+    found: int
+    hosts: List[DiscoveredHost]
+    created_checks: int = 0
+
+
+# --- Inventario unificado (CMDB) ---
+
+class InventoryItem(BaseModel):
+    source: str            # 'agent' | 'agentless' | 'proxmox'
+    name: str
+    identifier: str        # server_id, target o vmid
+    kind: Optional[str] = None      # tipo de check / guest_type / 'server'
+    status: Optional[str] = None    # online/offline/up/down/running...
+    detail: Optional[str] = None
+    node: Optional[str] = None      # nodo Proxmox, si aplica
 
 
 # --- Canales de notificación ---

@@ -17,6 +17,8 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,255}$")
 VALID_GUEST_TYPES = ("qemu", "lxc")
 VALID_BACKUP_MODES = ("snapshot", "suspend", "stop")
 VALID_AUTH_TYPES = ("password", "key")
+# Acciones de ciclo de vida soportadas por qm/pct (allowlist estricta).
+VALID_POWER_ACTIONS = ("start", "stop", "shutdown", "reboot", "suspend", "resume")
 
 # Rangos defensivos para recursos hardware.
 CORES_MIN, CORES_MAX = 1, 512
@@ -75,6 +77,12 @@ def valid_backup_mode(mode: str) -> str:
     if mode not in VALID_BACKUP_MODES:
         _fail(f"mode inválido (esperado {VALID_BACKUP_MODES})")
     return mode
+
+
+def valid_power_action(action: str) -> str:
+    if action not in VALID_POWER_ACTIONS:
+        _fail(f"acción inválida (esperado {VALID_POWER_ACTIONS})")
+    return action
 
 
 def valid_cores(cores) -> int:

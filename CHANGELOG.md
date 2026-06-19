@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-06-19
+
+### Added
+- **Inventario unificado (CMDB)**: nuevo endpoint `GET /api/inventory` y panel `/admin/inventory` que agregan en una sola vista los servidores con agente (online/offline según la última métrica), los checks agentless (up/down) y los guests Proxmox (VMs/contenedores). Es el punto donde convergen el lado "monitoreo" (Zabbix) y el lado "virtualización" (Proxmox).
+- **Auto-descubrimiento de red (estilo Zabbix)**: módulo `monitoring/discovery.py` y endpoint `POST /api/discovery/scan` (admin) que barren un rango CIDR detectando hosts vivos por TCP (puertos configurables) con *fallback* ICMP, de forma concurrente y acotada (máx. 1024 hosts). Opción `auto_create` para generar checks agentless de los hosts encontrados.
+- **Proxmox — ciclo de vida de guests**: `POST /api/proxmox/guests/{id}/power` (start/stop/shutdown/reboot/suspend/resume) y `GET .../status`, ejecutados por `qm`/`pct` vía SSH, con auditoría. Botones de encendido/apagado en el panel Proxmox.
+
+### Security
+- **Checks agentless**: validación estricta del `target` (`monitoring/validators.py`). Se rechaza el *argument injection* en ICMP (host con guion inicial, p. ej. `-f`/`-O`), se exige IP/hostname válido y URL http(s); el puerto TCP es obligatorio y se revalida al actualizar. Defensa en profundidad en el ejecutor `ping`.
+- **Canales de notificación**: el destino se valida antes de cifrarse — slack/discord/webhook exigen URL `https`; Telegram exige token `<id>:<secreto>`.
+
+### Tests
+- `tests/test_alternative.py`: 18 pruebas nuevas (inyección rechazada en checks y power, validación de canales, construcción de comandos `qm/pct`, descubrimiento con primitivas mockeadas e inventario agregando las tres fuentes). Suite total: 47 pruebas.
+
 ## [2.2.0] - 2026-06-18
 
 ### Added

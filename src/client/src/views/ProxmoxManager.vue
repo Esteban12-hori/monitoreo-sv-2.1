@@ -69,6 +69,14 @@ const saveResources = async (g) => {
 const linkServer = async (g) => {
   try { await axios.put(`/api/proxmox/guests/${g.id}/link`, { linked_server_id: g.linked_server_id || null }, H()); notify('Vínculo actualizado'); await loadGuests() } catch (e) { handleErr(e) }
 }
+const powerAction = async (g, action) => {
+  if (['stop', 'reboot', 'shutdown'].includes(action) && !confirm(`¿${action} ${g.name || g.vmid}?`)) return
+  try {
+    await axios.post(`/api/proxmox/guests/${g.id}/power`, { action }, H())
+    notify(`${action} enviado a ${g.vmid}`)
+    try { const r = await axios.get(`/api/proxmox/guests/${g.id}/status`, H()); g.status = r.data.status } catch (_) {}
+  } catch (e) { handleErr(e) }
+}
 
 // Snapshots
 const snaps = ref({})  // guest_id -> [snapshots]
@@ -215,6 +223,14 @@ onMounted(async () => {
               <span v-if="g.is_db" class="ml-1 text-xs px-2 py-0.5 rounded bg-purple-800">BD</span>
             </div>
             <span class="text-xs text-gray-500">VMID {{ g.vmid }}</span>
+          </div>
+          <div class="flex flex-wrap gap-1 mt-3">
+            <button @click="powerAction(g, 'start')" class="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs">▶ Iniciar</button>
+            <button @click="powerAction(g, 'shutdown')" class="px-2 py-1 bg-amber-700 hover:bg-amber-600 rounded text-xs">⏻ Apagar</button>
+            <button @click="powerAction(g, 'reboot')" class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-xs">⟳ Reiniciar</button>
+            <button @click="powerAction(g, 'stop')" class="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs">⏹ Detener</button>
+            <button @click="powerAction(g, 'suspend')" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">⏸ Suspender</button>
+            <button @click="powerAction(g, 'resume')" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">⏯ Reanudar</button>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mt-3 items-end">
             <div><label class="text-xs text-gray-400">Cores</label><input v-model.number="(res[g.id] ||= {}).cores" type="number" class="w-full px-2 py-1 bg-gray-800 rounded border border-gray-700 text-sm" /></div>

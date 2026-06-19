@@ -160,6 +160,36 @@ def list_guests(node) -> List[dict]:
     return result
 
 
+# --- Ciclo de vida (encendido/apagado) -------------------------------------
+
+def power_action(node, vmid, guest_type: str, action: str) -> str:
+    """
+    Ejecuta una acción de ciclo de vida sobre una VM (qemu) o contenedor (lxc).
+    `action` se valida contra una allowlist; el comando es `qm/pct <action> <vmid>`.
+    """
+    vmid = v.valid_vmid(vmid)
+    guest_type = v.valid_guest_type(guest_type)
+    action = v.valid_power_action(action)
+    args = [_cli(guest_type), action, str(vmid)]
+    rc, out, err = ssh_executor.run_command(node, args)
+    _check_rc(rc, out, err, action)
+    return out.strip() or f"{action} ok"
+
+
+def guest_status(node, vmid, guest_type: str) -> str:
+    """Devuelve el estado actual del guest (`qm status` / `pct status`)."""
+    vmid = v.valid_vmid(vmid)
+    guest_type = v.valid_guest_type(guest_type)
+    args = [_cli(guest_type), "status", str(vmid)]
+    rc, out, err = ssh_executor.run_command(node, args)
+    _check_rc(rc, out, err, "status")
+    # Salida típica: "status: running"
+    text = out.strip()
+    if ":" in text:
+        return text.split(":", 1)[1].strip()
+    return text
+
+
 def test_connection(node) -> str:
     """Verifica acceso SSH y disponibilidad de las herramientas Proxmox."""
     rc, out, err = ssh_executor.run_command(node, ["pveversion"])

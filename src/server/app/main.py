@@ -41,16 +41,18 @@ from .schemas import (
     ProxmoxNodeCreate, ProxmoxNodeResponse, ProxmoxGuestResponse, GuestLinkUpdate,
     GuestResourceUpdate, SnapshotCreate, SnapshotResponse, BackupScheduleCreate,
     BackupScheduleUpdate, BackupScheduleResponse, BackupRunRequest, BackupJobResponse,
-    NodeLinkCreate, NodeLinkResponse, MigrateRequest
+    NodeLinkCreate, NodeLinkResponse, MigrateRequest, GuestPowerRequest
 )
 from .proxmox import service as pmx_service, wireguard as pmx_wg, scheduler as pmx_scheduler, dbdetect as pmx_dbdetect
 from .proxmox.ssh_executor import get_host_fingerprint, SSHCommandError
 from .schemas import (
     MonitoringCheckCreate, MonitoringCheckUpdate, MonitoringCheckResponse,
     MonitoringCheckResultResponse, NotificationChannelCreate, NotificationChannelUpdate,
-    NotificationChannelResponse
+    NotificationChannelResponse, DiscoveryScanRequest, DiscoveryScanResponse, InventoryItem
 )
 from .monitoring import checks as mon_checks
+from .monitoring import validators as mon_validators
+from .monitoring import discovery as mon_discovery
 from .notifications import channels as notif_channels
 from . import maintenance
 import smtplib
@@ -1984,6 +1986,28 @@ def pmx_update_resources(guest_id: int, payload: GuestResourceUpdate, user: dict
         return {"status": "ok", "output": out}
 
 
+@app.post("/api/proxmox/guests/{guest_id}/power")
+def pmx_power_action(guest_id: int, payload: GuestPowerRequest, user: dict = Depends(require_admin)):
+    """Ciclo de vida de un guest: start/stop/shutdown/reboot/suspend/resume."""
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.power_action(node, guest.vmid, guest.guest_type, payload.action)
+        log_audit(sess, f"power_{payload.action}", "proxmox_guest", str(guest.vmid),
+                  {"action": payload.action}, user["email"])
+        sess.commit()
+        return {"status": "ok", "action": payload.action, "output": out}
+
+
+@app.get("/api/proxmox/guests/{guest_id}/status")
+def pmx_guest_status(guest_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        status = pmx_service.guest_status(node, guest.vmid, guest.guest_type)
+        return {"vmid": guest.vmid, "guest_type": guest.guest_type, "status": status}
+
+
 @app.put("/api/proxmox/guests/{guest_id}/link", response_model=ProxmoxGuestResponse)
 def pmx_link_guest(guest_id: int, payload: GuestLinkUpdate, user: dict = Depends(require_admin)):
     with Session(engine) as sess:
@@ -2221,6 +2245,7 @@ def list_monitoring_checks(user: dict = Depends(get_current_user_from_token)):
 
 @app.post("/api/monitoring/checks", response_model=MonitoringCheckResponse)
 def create_monitoring_check(payload: MonitoringCheckCreate, user: dict = Depends(require_admin)):
+    mon_validators.validate_check_target(payload.check_type, payload.target, payload.port)
     with Session(engine) as sess:
         check = MonitoringCheck(
             name=payload.name, check_type=payload.check_type, target=payload.target,
@@ -2241,7 +2266,13 @@ def update_monitoring_check(check_id: int, payload: MonitoringCheckUpdate, user:
         check = sess.get(MonitoringCheck, check_id)
         if not check:
             raise HTTPException(status_code=404, detail="Check no encontrado")
-        for field, value in payload.dict(exclude_unset=True).items():
+        data = payload.dict(exclude_unset=True)
+        # Si cambia el target o el puerto, revalidar contra el tipo actual del check.
+        if "target" in data or "port" in data:
+            new_target = data.get("target", check.target)
+            new_port = data.get("port", check.port)
+            mon_validators.validate_check_target(check.check_type, new_target, new_port)
+        for field, value in data.items():
             setattr(check, field, value)
         sess.commit()
         sess.refresh(check)
@@ -2280,6 +2311,94 @@ def list_check_results(check_id: int, limit: int = 100, user: dict = Depends(get
 
 
 # ============================================================
+# --- Auto-descubrimiento de red (estilo Zabbix) ---
+# ============================================================
+
+@app.post("/api/discovery/scan", response_model=DiscoveryScanResponse)
+def discovery_scan(payload: DiscoveryScanRequest, user: dict = Depends(require_admin)):
+    """Barre un CIDR y devuelve los hosts vivos; opcionalmente crea checks."""
+    hosts = mon_discovery.discover_hosts(
+        payload.cidr, ports=payload.ports, timeout=payload.timeout, use_icmp=payload.use_icmp
+    )
+    created = 0
+    if payload.auto_create and hosts:
+        with Session(engine) as sess:
+            existing = {c.target for c in sess.execute(select(MonitoringCheck)).scalars().all()}
+            for h in hosts:
+                if h["open_ports"]:
+                    ctype, target, port = "tcp", h["host"], h["open_ports"][0]
+                else:
+                    ctype, target, port = "icmp", h["host"], None
+                if target in existing:
+                    continue
+                # Validación defensiva antes de persistir (reusa Fase 1).
+                mon_validators.validate_check_target(ctype, target, port)
+                sess.add(MonitoringCheck(
+                    name=f"auto-{target}", check_type=ctype, target=target, port=port,
+                    interval_seconds=60, timeout_seconds=10, enabled=True,
+                ))
+                existing.add(target)
+                created += 1
+            if created:
+                log_audit(sess, "discovery_auto_create", "monitoring_check",
+                          payload.cidr, {"created": created}, user["email"])
+            sess.commit()
+    return DiscoveryScanResponse(
+        cidr=payload.cidr, scanned=0, found=len(hosts), hosts=hosts, created_checks=created
+    )
+
+
+# ============================================================
+# --- Inventario unificado (CMDB) ---
+# ============================================================
+
+@app.get("/api/inventory", response_model=List[InventoryItem])
+def get_inventory(user: dict = Depends(get_current_user_from_token)):
+    """
+    Vista única de toda la infraestructura: servidores con agente, checks
+    agentless y guests Proxmox. Es el punto donde convergen el lado "Zabbix"
+    (monitoreo) y el lado "Proxmox" (virtualización).
+    """
+    items: List[dict] = []
+    online_window = datetime.utcnow() - timedelta(minutes=10)
+    with Session(engine) as sess:
+        # 1. Servidores con agente: online si reportaron métricas hace <10 min.
+        servers = sess.execute(select(Server)).scalars().all()
+        for s in servers:
+            last = sess.execute(
+                select(Metric.ts).where(Metric.server_id == s.server_id)
+                .order_by(Metric.ts.desc()).limit(1)
+            ).scalar_one_or_none()
+            online = False
+            if last is not None:
+                lt = last.replace(tzinfo=None) if last.tzinfo else last
+                online = lt >= online_window
+            items.append({
+                "source": "agent", "name": s.server_id, "identifier": s.server_id,
+                "kind": "server", "status": "online" if online else "offline",
+                "detail": s.group_name, "node": None,
+            })
+
+        # 2. Checks agentless.
+        for c in sess.execute(select(MonitoringCheck)).scalars().all():
+            items.append({
+                "source": "agentless", "name": c.name, "identifier": c.target,
+                "kind": c.check_type, "status": c.last_status or "unknown",
+                "detail": c.last_message, "node": None,
+            })
+
+        # 3. Guests Proxmox (VMs/contenedores).
+        nodes = {n.id: n.name for n in sess.execute(select(ProxmoxNode)).scalars().all()}
+        for g in sess.execute(select(ProxmoxGuest)).scalars().all():
+            items.append({
+                "source": "proxmox", "name": g.name or f"vmid-{g.vmid}",
+                "identifier": str(g.vmid), "kind": g.guest_type, "status": g.status,
+                "detail": "BD" if g.is_db else None, "node": nodes.get(g.node_id),
+            })
+    return items
+
+
+# ============================================================
 # --- Canales de notificación ---
 # ============================================================
 
@@ -2291,6 +2410,7 @@ def list_notification_channels(user: dict = Depends(require_admin)):
 
 @app.post("/api/admin/notification-channels", response_model=NotificationChannelResponse)
 def create_notification_channel(payload: NotificationChannelCreate, user: dict = Depends(require_admin)):
+    notif_channels.validate_channel_target(payload.channel_type, payload.target)
     with Session(engine) as sess:
         channel = NotificationChannel(
             name=payload.name, channel_type=payload.channel_type,
@@ -2312,6 +2432,7 @@ def update_notification_channel(channel_id: int, payload: NotificationChannelUpd
             raise HTTPException(status_code=404, detail="Canal no encontrado")
         data = payload.dict(exclude_unset=True)
         if "target" in data and data["target"]:
+            notif_channels.validate_channel_target(channel.channel_type, data["target"])
             channel.target_encrypted = encrypt_password(data.pop("target"))
         else:
             data.pop("target", None)
