@@ -15,6 +15,7 @@ binario `wg` en el backend) y las privadas se almacenan cifradas con Fernet.
 """
 import os
 import re
+import shlex
 import base64
 import logging
 from typing import Tuple
@@ -162,10 +163,12 @@ def migrate_guest(link, source_node, target_node, vmid, guest_type: str,
         raise HTTPException(status_code=502, detail="Ruta de archivo de backup inesperada")
 
     # 2) Transferencia nodo→nodo POR EL TÚNEL (IP WireGuard cifrada)
-    target_user = (target_node.ssh_user or "root")
+    # Defensa en profundidad: el destino se cita aunque ssh_user ya se valida con
+    # allowlist al crear el nodo (revalidación aquí por si proviene de datos antiguos).
+    target_user = v.valid_name(target_node.ssh_user or "root", "ssh_user")
     transfer = (
         f"rsync -e 'ssh -o StrictHostKeyChecking=accept-new' -av "
-        f"{archive} {target_user}@{target_ip}:{DUMP_DIR}/"
+        f"{shlex.quote(archive)} {shlex.quote(f'{target_user}@{target_ip}:{DUMP_DIR}/')}"
     )
     rc, out, err = ssh_executor.run_command(source_node, ["sh", "-c", transfer], timeout=3600)
     log.append(out)

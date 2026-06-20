@@ -386,7 +386,7 @@ class ProxmoxNodeCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     hostname: str
     ssh_port: int = Field(22, ge=1, le=65535)
-    ssh_user: str = "root"
+    ssh_user: str = Field("root", pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     auth_type: str = Field("password", pattern="^(password|key)$")
     secret: str = Field(..., min_length=1)   # contraseña o clave privada (texto plano de entrada)
     use_sudo: bool = False
