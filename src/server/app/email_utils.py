@@ -192,6 +192,14 @@ def send_alert_email(server_id: str, alert_type: str, current_value: float, thre
             unique[r['Email']] = r
     to_recipients = list(unique.values())
 
+    # Enviar a canales externos (Slack/Telegram/Discord/Webhook), si hay configurados.
+    # Se hace siempre, aunque no haya destinatarios de correo.
+    try:
+        from .notifications.channels import dispatch_alert
+        dispatch_alert(subject, text_content)
+    except Exception as e:
+        logger.warning(f"Error notificando a canales externos: {e}")
+
     if not to_recipients:
         logger.warning("No hay destinatarios de correo configurados.")
         return

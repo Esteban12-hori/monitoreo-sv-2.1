@@ -359,6 +359,12 @@ const getServerOs = (server) => {
             <div class="flex items-center space-x-2" v-if="authStore.isAdmin">
                  <router-link to="/admin/users" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Users</router-link>
                  <span class="text-gray-600">|</span>
+                 <router-link to="/admin/inventory" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Inventario</router-link>
+                 <span class="text-gray-600">|</span>
+                 <router-link to="/admin/proxmox" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Proxmox</router-link>
+                 <span class="text-gray-600">|</span>
+                 <router-link to="/admin/monitoring" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Monitoreo</router-link>
+                 <span class="text-gray-600">|</span>
                  <router-link to="/admin/logs" class="text-sm font-medium text-gray-400 hover:text-cyan-400 transition-colors">Logs</router-link>
             </div>
             <div class="flex flex-col items-end">

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import uuid
 import unicodedata
@@ -19,7 +19,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
+from config.settings import DB_PATH, DEFAULT_ALERTS, ALLOWED_ORIGINS, ALLOWED_HOSTS, DASHBOARD_TOKEN, CACHE_MAX_ITEMS, BASE_DIR
 from .models import Base, Server, Metric, AlertConfig, User, UserSession, AlertRecipient, AlertRule, ServerThreshold, AuditLog, UserServerLink, SMTPConfig, RemoteAction, UserGroup, NotificationRule, UserServerThreshold, DataMonitoring
 from .schemas import (
     MetricsIngestSchema, RegisterServerSchema, AlertConfigSchema, LoginSchema,
@@ -35,6 +35,26 @@ from .schemas import (
 from .email_utils import send_alert_email
 from .alert_logic import get_alert_recipients, check_advanced_rules, explain_alert_decision
 from .security import encrypt_password, decrypt_password
+from .models import ProxmoxNode, ProxmoxGuest, BackupSchedule, BackupJob, NodeLink, SnapshotRecord
+from .models import MonitoringCheck, MonitoringCheckResult, NotificationChannel
+from .schemas import (
+    ProxmoxNodeCreate, ProxmoxNodeResponse, ProxmoxGuestResponse, GuestLinkUpdate,
+    GuestResourceUpdate, SnapshotCreate, SnapshotResponse, BackupScheduleCreate,
+    BackupScheduleUpdate, BackupScheduleResponse, BackupRunRequest, BackupJobResponse,
+    NodeLinkCreate, NodeLinkResponse, MigrateRequest, GuestPowerRequest
+)
+from .proxmox import service as pmx_service, wireguard as pmx_wg, scheduler as pmx_scheduler, dbdetect as pmx_dbdetect
+from .proxmox.ssh_executor import get_host_fingerprint, SSHCommandError
+from .schemas import (
+    MonitoringCheckCreate, MonitoringCheckUpdate, MonitoringCheckResponse,
+    MonitoringCheckResultResponse, NotificationChannelCreate, NotificationChannelUpdate,
+    NotificationChannelResponse, DiscoveryScanRequest, DiscoveryScanResponse, InventoryItem
+)
+from .monitoring import checks as mon_checks
+from .monitoring import validators as mon_validators
+from .monitoring import discovery as mon_discovery
+from .notifications import channels as notif_channels
+from . import maintenance
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -76,8 +96,8 @@ app.add_middleware(SlowAPIMiddleware)
 
 # --- Security Middlewares ---
 app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["localhost", "127.0.0.1", "::1", "*"]
+    TrustedHostMiddleware,
+    allowed_hosts=ALLOWED_HOSTS
 )
 
 @app.middleware("http")
@@ -94,10 +114,15 @@ async def add_security_headers(request: Request, call_next):
     )
     return response
 
+# Si se permite cualquier origen ("*"), no se pueden habilitar credenciales:
+# el navegador rechaza la combinación wildcard + credentials. Como la
+# autenticación viaja en la cabecera X-Dashboard-Token (no en cookies),
+# deshabilitar credentials en ese caso es seguro y evita una config inválida.
+_allow_credentials = "*" not in ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"]
 )
@@ -247,6 +272,20 @@ def startup():
     except Exception as e:
         print(f"Advertencia en startup: {e}")
 
+    # Iniciar el scheduler de backups Proxmox (no bloquea si APScheduler falta)
+    try:
+        pmx_scheduler.init_scheduler()
+    except Exception as e:
+        print(f"Advertencia iniciando scheduler de backups: {e}")
+
+
+@app.on_event("shutdown")
+def shutdown():
+    try:
+        pmx_scheduler.shutdown_scheduler()
+    except Exception:
+        pass
+
 # Caché en memoria de métricas recientes por servidor
 _cache: dict[str, list[dict]] = {}
 _cache_order: dict[str, int] = {}
@@ -259,6 +298,9 @@ _alert_state: dict[tuple[str, str], float] = {}
 # Estado de alertas avanzadas: {key: {"start": ts, "last_sent": ts}}
 _advanced_alert_state: dict[str, dict] = {}
 ALERT_COOLDOWN = 3600  # 1 hora
+
+# Tiempo de vida de las sesiones (horas). Configurable vía env.
+SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "168"))  # 7 días por defecto
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -280,7 +322,25 @@ def get_current_user_from_token(x_dashboard_token: Optional[str] = Header(None))
         
         if not session_record:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
-        
+
+        # Validar expiración de la sesión (TTL)
+        created = session_record.created_at
+        if created is not None:
+            try:
+                # Normalizar a naive UTC para comparar de forma segura
+                if created.tzinfo is not None:
+                    created = created.astimezone(timezone.utc).replace(tzinfo=None)
+                age = datetime.utcnow() - created
+                if age > timedelta(hours=SESSION_TTL_HOURS):
+                    sess.delete(session_record)
+                    sess.commit()
+                    raise HTTPException(status_code=401, detail="Session expired")
+            except HTTPException:
+                raise
+            except Exception:
+                # Si la comparación falla por algún motivo, no bloqueamos el acceso
+                pass
+
         # Cargar usuario relacionado
         user = sess.get(User, session_record.user_id)
         if not user:
@@ -826,8 +886,9 @@ def verify_webhook(token: str = Query(...)):
     """
     Verifica que el webhook esté activo y el token sea recibido correctamente.
     """
-    logger.info(f"Webhook Verification - Token: {token}")
-    return {"status": "active", "message": "Webhook endpoint is ready", "token_received": token}
+    masked = (token[:4] + "***") if token else ""
+    logger.info(f"Webhook verification request received (token={masked})")
+    return {"status": "active", "message": "Webhook endpoint is ready"}
 
 @app.post("/api/webhook")
 async def receive_webhook(request: Request, token: str = Query(...)):
@@ -1740,26 +1801,26 @@ def preview_alert_decision(payload: AlertPreviewRequest, user: dict = Depends(re
 def get_user_server_threshold(server_id: str, user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         ut = sess.execute(select(UserServerThreshold).where(
-            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.user_id == user["user_id"],
             UserServerThreshold.server_id == server_id
         )).scalar_one_or_none()
-        
+
         if not ut:
             # Return empty/default structure if not found, with dummy id
-            return UserServerThresholdResponse(id=0, user_id=user["id"], server_id=server_id)
+            return UserServerThresholdResponse(id=0, user_id=user["user_id"], server_id=server_id)
         return ut
 
 @app.post("/api/user/thresholds", response_model=UserServerThresholdResponse)
 def set_user_server_threshold(payload: UserServerThresholdUpdate, user: dict = Depends(get_current_user_from_token)):
     with Session(engine) as sess:
         ut = sess.execute(select(UserServerThreshold).where(
-            UserServerThreshold.user_id == user["id"],
+            UserServerThreshold.user_id == user["user_id"],
             UserServerThreshold.server_id == payload.server_id
         )).scalar_one_or_none()
-        
+
         if not ut:
             ut = UserServerThreshold(
-                user_id=user["id"],
+                user_id=user["user_id"],
                 server_id=payload.server_id,
                 cpu_limit=payload.cpu_limit,
                 mem_limit=payload.mem_limit,
@@ -1774,6 +1835,648 @@ def set_user_server_threshold(payload: UserServerThresholdUpdate, user: dict = D
         sess.commit()
         sess.refresh(ut)
         return ut
+
+
+# ============================================================
+# --- Gestión Proxmox (SSH + WireGuard) ---
+# Todos los endpoints requieren admin y registran auditoría.
+# ============================================================
+
+def _pmx_get_node(sess: Session, node_id: int) -> ProxmoxNode:
+    node = sess.get(ProxmoxNode, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Nodo Proxmox no encontrado")
+    return node
+
+
+def _pmx_get_guest(sess: Session, guest_id: int) -> ProxmoxGuest:
+    guest = sess.get(ProxmoxGuest, guest_id)
+    if not guest:
+        raise HTTPException(status_code=404, detail="Guest no encontrado")
+    return guest
+
+
+# --- Nodos ---
+
+@app.get("/api/proxmox/nodes", response_model=List[ProxmoxNodeResponse])
+def pmx_list_nodes(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(ProxmoxNode)).scalars().all()
+
+
+@app.post("/api/proxmox/nodes", response_model=ProxmoxNodeResponse)
+def pmx_create_node(payload: ProxmoxNodeCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        existing = sess.execute(select(ProxmoxNode).where(ProxmoxNode.name == payload.name)).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="Ya existe un nodo con ese nombre")
+        node = ProxmoxNode(
+            name=payload.name,
+            hostname=payload.hostname,
+            ssh_port=payload.ssh_port,
+            ssh_user=payload.ssh_user,
+            auth_type=payload.auth_type,
+            secret_encrypted=encrypt_password(payload.secret),
+            use_sudo=payload.use_sudo,
+        )
+        sess.add(node)
+        sess.commit()
+        sess.refresh(node)
+        # Best-effort: registrar la huella de host key (TOFU)
+        try:
+            node.host_key_fingerprint = get_host_fingerprint(node)
+            sess.commit()
+            sess.refresh(node)
+        except Exception as e:
+            logger.warning(f"No se pudo obtener la host key de {node.hostname}: {e}")
+        log_audit(sess, "create", "proxmox_node", node.name, {"hostname": node.hostname}, user["email"])
+        sess.commit()
+        sess.refresh(node)
+        return node
+
+
+@app.delete("/api/proxmox/nodes/{node_id}")
+def pmx_delete_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        name = node.name
+        sess.delete(node)
+        log_audit(sess, "delete", "proxmox_node", name, None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/nodes/{node_id}/test")
+def pmx_test_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        try:
+            version = pmx_service.test_connection(node)
+        except SSHCommandError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"status": "ok", "version": version}
+
+
+@app.post("/api/proxmox/nodes/{node_id}/sync")
+def pmx_sync_node(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, node_id)
+        try:
+            guests = pmx_service.list_guests(node)
+        except SSHCommandError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        # Conjunto de servidores monitoreados para auto-vinculación por nombre
+        monitored = {s.server_id for s in sess.execute(select(Server)).scalars().all()}
+
+        seen = set()
+        for g in guests:
+            seen.add((g["vmid"], g["guest_type"]))
+            existing = sess.execute(
+                select(ProxmoxGuest).where(
+                    ProxmoxGuest.node_id == node.id,
+                    ProxmoxGuest.vmid == g["vmid"],
+                    ProxmoxGuest.guest_type == g["guest_type"],
+                )
+            ).scalar_one_or_none()
+            if not existing:
+                existing = ProxmoxGuest(node_id=node.id, vmid=g["vmid"], guest_type=g["guest_type"])
+                sess.add(existing)
+            existing.name = g.get("name")
+            existing.status = g.get("status")
+            existing.last_synced = datetime.utcnow()
+            # Auto-vincular si el nombre coincide con un servidor monitoreado
+            if existing.linked_server_id is None and g.get("name") in monitored:
+                existing.linked_server_id = g.get("name")
+        sess.commit()
+
+        # Refrescar autodetección de BD
+        try:
+            pmx_dbdetect.detect_db_guests(sess)
+        except Exception as e:
+            logger.warning(f"Autodetección BD falló: {e}")
+
+        log_audit(sess, "sync", "proxmox_node", node.name, {"guests": len(guests)}, user["email"])
+        sess.commit()
+        return {"status": "synced", "count": len(guests)}
+
+
+# --- Guests: inventario, recursos, vinculación ---
+
+@app.get("/api/proxmox/nodes/{node_id}/guests", response_model=List[ProxmoxGuestResponse])
+def pmx_list_guests(node_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        _pmx_get_node(sess, node_id)
+        return sess.execute(select(ProxmoxGuest).where(ProxmoxGuest.node_id == node_id)).scalars().all()
+
+
+@app.put("/api/proxmox/guests/{guest_id}/resources")
+def pmx_update_resources(guest_id: int, payload: GuestResourceUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.set_resources(
+            node, guest.vmid, guest.guest_type,
+            cores=payload.cores, memory=payload.memory,
+            disk=payload.disk, disk_size=payload.disk_size,
+        )
+        log_audit(sess, "update_resources", "proxmox_guest", str(guest.vmid),
+                  payload.dict(exclude_none=True), user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.post("/api/proxmox/guests/{guest_id}/power")
+def pmx_power_action(guest_id: int, payload: GuestPowerRequest, user: dict = Depends(require_admin)):
+    """Ciclo de vida de un guest: start/stop/shutdown/reboot/suspend/resume."""
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.power_action(node, guest.vmid, guest.guest_type, payload.action)
+        log_audit(sess, f"power_{payload.action}", "proxmox_guest", str(guest.vmid),
+                  {"action": payload.action}, user["email"])
+        sess.commit()
+        return {"status": "ok", "action": payload.action, "output": out}
+
+
+@app.get("/api/proxmox/guests/{guest_id}/status")
+def pmx_guest_status(guest_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        status = pmx_service.guest_status(node, guest.vmid, guest.guest_type)
+        return {"vmid": guest.vmid, "guest_type": guest.guest_type, "status": status}
+
+
+@app.put("/api/proxmox/guests/{guest_id}/link", response_model=ProxmoxGuestResponse)
+def pmx_link_guest(guest_id: int, payload: GuestLinkUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        guest.linked_server_id = payload.linked_server_id
+        # Reevaluar BD con el nuevo vínculo
+        if payload.linked_server_id:
+            guest.is_db = pmx_dbdetect.server_runs_db(sess, payload.linked_server_id)
+        else:
+            guest.is_db = False
+        sess.commit()
+        sess.refresh(guest)
+        return guest
+
+
+# --- Snapshots ---
+
+@app.get("/api/proxmox/guests/{guest_id}/snapshots", response_model=List[SnapshotResponse])
+def pmx_list_snapshots(guest_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        return pmx_service.list_snapshots(node, guest.vmid, guest.guest_type)
+
+
+@app.post("/api/proxmox/guests/{guest_id}/snapshots")
+def pmx_create_snapshot(guest_id: int, payload: SnapshotCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.create_snapshot(node, guest.vmid, guest.guest_type, payload.name, payload.description)
+        sess.add(SnapshotRecord(node_id=node.id, vmid=guest.vmid, name=payload.name,
+                                description=payload.description, created_by=user["email"]))
+        log_audit(sess, "create_snapshot", "proxmox_guest", str(guest.vmid), {"name": payload.name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.post("/api/proxmox/guests/{guest_id}/snapshots/{name}/rollback")
+def pmx_rollback_snapshot(guest_id: int, name: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.rollback_snapshot(node, guest.vmid, guest.guest_type, name)
+        log_audit(sess, "rollback_snapshot", "proxmox_guest", str(guest.vmid), {"name": name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+@app.delete("/api/proxmox/guests/{guest_id}/snapshots/{name}")
+def pmx_delete_snapshot(guest_id: int, name: str, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        guest = _pmx_get_guest(sess, guest_id)
+        node = _pmx_get_node(sess, guest.node_id)
+        out = pmx_service.delete_snapshot(node, guest.vmid, guest.guest_type, name)
+        log_audit(sess, "delete_snapshot", "proxmox_guest", str(guest.vmid), {"name": name}, user["email"])
+        sess.commit()
+        return {"status": "ok", "output": out}
+
+
+# --- Backups programados ---
+
+@app.get("/api/proxmox/backup-schedules", response_model=List[BackupScheduleResponse])
+def pmx_list_schedules(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(BackupSchedule)).scalars().all()
+
+
+@app.post("/api/proxmox/backup-schedules", response_model=BackupScheduleResponse)
+def pmx_create_schedule(payload: BackupScheduleCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = BackupSchedule(
+            name=payload.name, node_id=payload.node_id, cron_expr=payload.cron_expr,
+            storage=payload.storage, mode=payload.mode, keep_last=payload.keep_last,
+            only_db=payload.only_db, enabled=payload.enabled,
+        )
+        sess.add(sched)
+        sess.commit()
+        sess.refresh(sched)
+        pmx_scheduler.add_schedule_job(sched)
+        log_audit(sess, "create", "backup_schedule", sched.name, {"cron": sched.cron_expr}, user["email"])
+        sess.commit()
+        sess.refresh(sched)
+        return sched
+
+
+@app.put("/api/proxmox/backup-schedules/{schedule_id}", response_model=BackupScheduleResponse)
+def pmx_update_schedule(schedule_id: int, payload: BackupScheduleUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = sess.get(BackupSchedule, schedule_id)
+        if not sched:
+            raise HTTPException(status_code=404, detail="Schedule no encontrado")
+        for field, value in payload.dict(exclude_unset=True).items():
+            setattr(sched, field, value)
+        sess.commit()
+        sess.refresh(sched)
+        # Re-registrar el job
+        pmx_scheduler.remove_schedule_job(sched.id)
+        if sched.enabled:
+            pmx_scheduler.add_schedule_job(sched)
+        log_audit(sess, "update", "backup_schedule", sched.name, payload.dict(exclude_unset=True), user["email"])
+        sess.commit()
+        sess.refresh(sched)
+        return sched
+
+
+@app.delete("/api/proxmox/backup-schedules/{schedule_id}")
+def pmx_delete_schedule(schedule_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        sched = sess.get(BackupSchedule, schedule_id)
+        if not sched:
+            raise HTTPException(status_code=404, detail="Schedule no encontrado")
+        name = sched.name
+        sess.delete(sched)
+        pmx_scheduler.remove_schedule_job(schedule_id)
+        log_audit(sess, "delete", "backup_schedule", name, None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/backups/run", response_model=BackupJobResponse)
+def pmx_run_backup(payload: BackupRunRequest, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        node = _pmx_get_node(sess, payload.node_id)
+        job = BackupJob(node_id=node.id, vmid=payload.vmid, storage=payload.storage, status="running")
+        sess.add(job)
+        sess.commit()
+        sess.refresh(job)
+        try:
+            rc, out, err = pmx_service.run_vzdump(node, payload.vmid, payload.storage, payload.mode)
+            job.status = "ok" if rc == 0 else "error"
+            job.output_log = (out or "") + (("\n" + err) if err else "")
+        except HTTPException as e:
+            job.status = "error"
+            job.output_log = str(e.detail)
+        except Exception as e:
+            job.status = "error"
+            job.output_log = str(e)
+        job.finished_at = datetime.utcnow()
+        log_audit(sess, "run_backup", "proxmox_guest", str(payload.vmid), {"storage": payload.storage}, user["email"])
+        sess.commit()
+        sess.refresh(job)
+        return job
+
+
+@app.get("/api/proxmox/backup-jobs", response_model=List[BackupJobResponse])
+def pmx_list_backup_jobs(limit: int = 100, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(
+            select(BackupJob).order_by(BackupJob.id.desc()).limit(limit)
+        ).scalars().all()
+
+
+# --- Vinculación de nodos (túnel WireGuard) y migración ---
+
+@app.get("/api/proxmox/links", response_model=List[NodeLinkResponse])
+def pmx_list_links(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(NodeLink)).scalars().all()
+
+
+@app.post("/api/proxmox/links", response_model=NodeLinkResponse)
+def pmx_create_link(payload: NodeLinkCreate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        if payload.source_node_id == payload.target_node_id:
+            raise HTTPException(status_code=400, detail="El nodo origen y destino deben ser distintos")
+        source = _pmx_get_node(sess, payload.source_node_id)
+        target = _pmx_get_node(sess, payload.target_node_id)
+        link = NodeLink(
+            source_node_id=source.id, target_node_id=target.id,
+            wg_interface=payload.wg_interface, listen_port=payload.listen_port,
+        )
+        sess.add(link)
+        sess.commit()
+        sess.refresh(link)
+        try:
+            pmx_wg.create_link(link, source, target)
+        except HTTPException:
+            link.status = "error"
+            sess.commit()
+            raise
+        log_audit(sess, "create_link", "node_link", f"{source.name}->{target.name}",
+                  {"interface": link.wg_interface}, user["email"])
+        sess.commit()
+        sess.refresh(link)
+        return link
+
+
+@app.delete("/api/proxmox/links/{link_id}")
+def pmx_delete_link(link_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        link = sess.get(NodeLink, link_id)
+        if not link:
+            raise HTTPException(status_code=404, detail="Link no encontrado")
+        source = sess.get(ProxmoxNode, link.source_node_id)
+        target = sess.get(ProxmoxNode, link.target_node_id)
+        try:
+            if source and target:
+                pmx_wg.teardown_link(link, source, target)
+        except Exception as e:
+            logger.warning(f"Error bajando túnel: {e}")
+        sess.delete(link)
+        log_audit(sess, "delete_link", "node_link", str(link_id), None, user["email"])
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/proxmox/migrate")
+def pmx_migrate(payload: MigrateRequest, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        link = sess.get(NodeLink, payload.link_id)
+        if not link:
+            raise HTTPException(status_code=404, detail="Link no encontrado")
+        source = _pmx_get_node(sess, link.source_node_id)
+        target = _pmx_get_node(sess, link.target_node_id)
+        out = pmx_wg.migrate_guest(
+            link, source, target, payload.vmid, payload.guest_type,
+            payload.storage, online=payload.online,
+        )
+        log_audit(sess, "migrate", "proxmox_guest", str(payload.vmid),
+                  {"from": source.name, "to": target.name}, user["email"])
+        sess.commit()
+        return {"status": "migrated", "output": out}
+
+
+# ============================================================
+# --- Checks agentless (monitoreo server-side) ---
+# ============================================================
+
+@app.get("/api/monitoring/checks", response_model=List[MonitoringCheckResponse])
+def list_monitoring_checks(user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        return sess.execute(select(MonitoringCheck)).scalars().all()
+
+
+@app.post("/api/monitoring/checks", response_model=MonitoringCheckResponse)
+def create_monitoring_check(payload: MonitoringCheckCreate, user: dict = Depends(require_admin)):
+    mon_validators.validate_check_target(payload.check_type, payload.target, payload.port)
+    with Session(engine) as sess:
+        check = MonitoringCheck(
+            name=payload.name, check_type=payload.check_type, target=payload.target,
+            port=payload.port, interval_seconds=payload.interval_seconds,
+            timeout_seconds=payload.timeout_seconds, expected_status=payload.expected_status,
+            enabled=payload.enabled,
+        )
+        sess.add(check)
+        log_audit(sess, "create", "monitoring_check", payload.name, {"type": payload.check_type}, user["email"])
+        sess.commit()
+        sess.refresh(check)
+        return check
+
+
+@app.put("/api/monitoring/checks/{check_id}", response_model=MonitoringCheckResponse)
+def update_monitoring_check(check_id: int, payload: MonitoringCheckUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        check = sess.get(MonitoringCheck, check_id)
+        if not check:
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+        data = payload.dict(exclude_unset=True)
+        # Si cambia el target o el puerto, revalidar contra el tipo actual del check.
+        if "target" in data or "port" in data:
+            new_target = data.get("target", check.target)
+            new_port = data.get("port", check.port)
+            mon_validators.validate_check_target(check.check_type, new_target, new_port)
+        for field, value in data.items():
+            setattr(check, field, value)
+        sess.commit()
+        sess.refresh(check)
+        return check
+
+
+@app.delete("/api/monitoring/checks/{check_id}")
+def delete_monitoring_check(check_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        check = sess.get(MonitoringCheck, check_id)
+        if not check:
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+        sess.execute(delete(MonitoringCheckResult).where(MonitoringCheckResult.check_id == check_id))
+        sess.delete(check)
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/monitoring/checks/{check_id}/run")
+def run_monitoring_check(check_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        if not sess.get(MonitoringCheck, check_id):
+            raise HTTPException(status_code=404, detail="Check no encontrado")
+    result = mon_checks.execute_and_store(check_id)
+    return {"status": "ok", "result": result}
+
+
+@app.get("/api/monitoring/checks/{check_id}/results", response_model=List[MonitoringCheckResultResponse])
+def list_check_results(check_id: int, limit: int = 100, user: dict = Depends(get_current_user_from_token)):
+    with Session(engine) as sess:
+        return sess.execute(
+            select(MonitoringCheckResult)
+            .where(MonitoringCheckResult.check_id == check_id)
+            .order_by(MonitoringCheckResult.id.desc()).limit(limit)
+        ).scalars().all()
+
+
+# ============================================================
+# --- Auto-descubrimiento de red (estilo Zabbix) ---
+# ============================================================
+
+@app.post("/api/discovery/scan", response_model=DiscoveryScanResponse)
+def discovery_scan(payload: DiscoveryScanRequest, user: dict = Depends(require_admin)):
+    """Barre un CIDR y devuelve los hosts vivos; opcionalmente crea checks."""
+    hosts = mon_discovery.discover_hosts(
+        payload.cidr, ports=payload.ports, timeout=payload.timeout, use_icmp=payload.use_icmp
+    )
+    created = 0
+    if payload.auto_create and hosts:
+        with Session(engine) as sess:
+            existing = {c.target for c in sess.execute(select(MonitoringCheck)).scalars().all()}
+            for h in hosts:
+                if h["open_ports"]:
+                    ctype, target, port = "tcp", h["host"], h["open_ports"][0]
+                else:
+                    ctype, target, port = "icmp", h["host"], None
+                if target in existing:
+                    continue
+                # Validación defensiva antes de persistir (reusa Fase 1).
+                mon_validators.validate_check_target(ctype, target, port)
+                sess.add(MonitoringCheck(
+                    name=f"auto-{target}", check_type=ctype, target=target, port=port,
+                    interval_seconds=60, timeout_seconds=10, enabled=True,
+                ))
+                existing.add(target)
+                created += 1
+            if created:
+                log_audit(sess, "discovery_auto_create", "monitoring_check",
+                          payload.cidr, {"created": created}, user["email"])
+            sess.commit()
+    return DiscoveryScanResponse(
+        cidr=payload.cidr, scanned=0, found=len(hosts), hosts=hosts, created_checks=created
+    )
+
+
+# ============================================================
+# --- Inventario unificado (CMDB) ---
+# ============================================================
+
+@app.get("/api/inventory", response_model=List[InventoryItem])
+def get_inventory(user: dict = Depends(get_current_user_from_token)):
+    """
+    Vista única de toda la infraestructura: servidores con agente, checks
+    agentless y guests Proxmox. Es el punto donde convergen el lado "Zabbix"
+    (monitoreo) y el lado "Proxmox" (virtualización).
+    """
+    items: List[dict] = []
+    online_window = datetime.utcnow() - timedelta(minutes=10)
+    with Session(engine) as sess:
+        # 1. Servidores con agente: online si reportaron métricas hace <10 min.
+        servers = sess.execute(select(Server)).scalars().all()
+        for s in servers:
+            last = sess.execute(
+                select(Metric.ts).where(Metric.server_id == s.server_id)
+                .order_by(Metric.ts.desc()).limit(1)
+            ).scalar_one_or_none()
+            online = False
+            if last is not None:
+                lt = last.replace(tzinfo=None) if last.tzinfo else last
+                online = lt >= online_window
+            items.append({
+                "source": "agent", "name": s.server_id, "identifier": s.server_id,
+                "kind": "server", "status": "online" if online else "offline",
+                "detail": s.group_name, "node": None,
+            })
+
+        # 2. Checks agentless.
+        for c in sess.execute(select(MonitoringCheck)).scalars().all():
+            items.append({
+                "source": "agentless", "name": c.name, "identifier": c.target,
+                "kind": c.check_type, "status": c.last_status or "unknown",
+                "detail": c.last_message, "node": None,
+            })
+
+        # 3. Guests Proxmox (VMs/contenedores).
+        nodes = {n.id: n.name for n in sess.execute(select(ProxmoxNode)).scalars().all()}
+        for g in sess.execute(select(ProxmoxGuest)).scalars().all():
+            items.append({
+                "source": "proxmox", "name": g.name or f"vmid-{g.vmid}",
+                "identifier": str(g.vmid), "kind": g.guest_type, "status": g.status,
+                "detail": "BD" if g.is_db else None, "node": nodes.get(g.node_id),
+            })
+    return items
+
+
+# ============================================================
+# --- Canales de notificación ---
+# ============================================================
+
+@app.get("/api/admin/notification-channels", response_model=List[NotificationChannelResponse])
+def list_notification_channels(user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        return sess.execute(select(NotificationChannel)).scalars().all()
+
+
+@app.post("/api/admin/notification-channels", response_model=NotificationChannelResponse)
+def create_notification_channel(payload: NotificationChannelCreate, user: dict = Depends(require_admin)):
+    notif_channels.validate_channel_target(payload.channel_type, payload.target)
+    with Session(engine) as sess:
+        channel = NotificationChannel(
+            name=payload.name, channel_type=payload.channel_type,
+            target_encrypted=encrypt_password(payload.target),
+            extra=payload.extra, enabled=payload.enabled,
+        )
+        sess.add(channel)
+        log_audit(sess, "create", "notification_channel", payload.name, {"type": payload.channel_type}, user["email"])
+        sess.commit()
+        sess.refresh(channel)
+        return channel
+
+
+@app.put("/api/admin/notification-channels/{channel_id}", response_model=NotificationChannelResponse)
+def update_notification_channel(channel_id: int, payload: NotificationChannelUpdate, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        data = payload.dict(exclude_unset=True)
+        if "target" in data and data["target"]:
+            notif_channels.validate_channel_target(channel.channel_type, data["target"])
+            channel.target_encrypted = encrypt_password(data.pop("target"))
+        else:
+            data.pop("target", None)
+        for field, value in data.items():
+            setattr(channel, field, value)
+        sess.commit()
+        sess.refresh(channel)
+        return channel
+
+
+@app.delete("/api/admin/notification-channels/{channel_id}")
+def delete_notification_channel(channel_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        sess.delete(channel)
+        sess.commit()
+        return {"status": "deleted"}
+
+
+@app.post("/api/admin/notification-channels/{channel_id}/test")
+def test_notification_channel(channel_id: int, user: dict = Depends(require_admin)):
+    with Session(engine) as sess:
+        channel = sess.get(NotificationChannel, channel_id)
+        if not channel:
+            raise HTTPException(status_code=404, detail="Canal no encontrado")
+        ok, detail = notif_channels.send_to_channel(channel, "🔔 Mensaje de prueba desde UpKeep")
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Envío falló: {detail}")
+    return {"status": "sent", "detail": detail}
+
+
+# ============================================================
+# --- Mantenimiento / retención ---
+# ============================================================
+
+@app.post("/api/admin/maintenance/purge")
+def purge_retention(user: dict = Depends(require_admin)):
+    deleted = maintenance.purge_old_data()
+    with Session(engine) as sess:
+        log_audit(sess, "purge", "maintenance", "retention", deleted, user["email"])
+        sess.commit()
+    return {"status": "ok", "deleted": deleted}
 
 
 # --- Servir Frontend ---

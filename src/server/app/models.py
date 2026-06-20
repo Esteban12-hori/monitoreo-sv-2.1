@@ -250,3 +250,146 @@ class DataMonitoring(Base):
     # Este es el 'createdAt' de inserción en DB
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+
+# --- Gestión Proxmox (SSH + WireGuard) ---
+
+class ProxmoxNode(Base):
+    """Nodo Proxmox gestionado vía SSH (sin API HTTP)."""
+    __tablename__ = "proxmox_nodes"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), unique=True, nullable=False)
+    hostname = Column(String(255), nullable=False)        # IP o FQDN para SSH
+    ssh_port = Column(Integer, default=22, nullable=False)
+    ssh_user = Column(String(255), default="root", nullable=False)
+    auth_type = Column(String(20), default="password", nullable=False)  # 'password' | 'key'
+    secret_encrypted = Column(Text, nullable=False)       # contraseña o clave privada (cifrada Fernet)
+    host_key_fingerprint = Column(String(255), nullable=True)  # TOFU: huella de la host key
+    use_sudo = Column(Boolean, default=False)             # anteponer 'sudo' a los comandos
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    guests = relationship("ProxmoxGuest", back_populates="node", cascade="all, delete-orphan")
+
+
+class ProxmoxGuest(Base):
+    """Inventario cacheado de VMs (qemu) y contenedores (lxc) de un nodo."""
+    __tablename__ = "proxmox_guests"
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, ForeignKey("proxmox_nodes.id"), nullable=False, index=True)
+    vmid = Column(Integer, nullable=False)
+    guest_type = Column(String(10), nullable=False)        # 'qemu' | 'lxc'
+    name = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=True)
+    is_db = Column(Boolean, default=False)                 # marcado por autodetección de BD
+    linked_server_id = Column(String(255), nullable=True)  # server_id monitoreado asociado
+    last_synced = Column(DateTime(timezone=True), nullable=True)
+
+    node = relationship("ProxmoxNode", back_populates="guests")
+
+
+class BackupSchedule(Base):
+    """Programación de backups (vzdump) gestionada por APScheduler."""
+    __tablename__ = "backup_schedules"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    node_id = Column(Integer, ForeignKey("proxmox_nodes.id"), nullable=True)  # None = todos los nodos
+    cron_expr = Column(String(100), nullable=False)        # ej. "0 3 * * *"
+    storage = Column(String(64), nullable=False)
+    mode = Column(String(20), default="snapshot")          # 'snapshot' | 'suspend' | 'stop'
+    keep_last = Column(Integer, default=3)
+    only_db = Column(Boolean, default=True)                # solo guests detectados como BD
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BackupJob(Base):
+    """Historial de ejecuciones de backup."""
+    __tablename__ = "backup_jobs"
+    id = Column(Integer, primary_key=True)
+    schedule_id = Column(Integer, ForeignKey("backup_schedules.id"), nullable=True)
+    node_id = Column(Integer, nullable=True)
+    vmid = Column(Integer, nullable=True)
+    storage = Column(String(64), nullable=True)
+    status = Column(String(20), default="running")         # 'running' | 'ok' | 'error'
+    output_log = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class NodeLink(Base):
+    """Túnel WireGuard cifrado entre dos nodos para migración segura."""
+    __tablename__ = "node_links"
+    id = Column(Integer, primary_key=True)
+    source_node_id = Column(Integer, ForeignKey("proxmox_nodes.id"), nullable=False)
+    target_node_id = Column(Integer, ForeignKey("proxmox_nodes.id"), nullable=False)
+    status = Column(String(20), default="down")            # 'down' | 'up' | 'error'
+    wg_interface = Column(String(32), default="wg-mig0")
+    listen_port = Column(Integer, default=51830)
+    source_wg_pubkey = Column(String(255), nullable=True)
+    target_wg_pubkey = Column(String(255), nullable=True)
+    source_wg_privkey_encrypted = Column(Text, nullable=True)
+    target_wg_privkey_encrypted = Column(Text, nullable=True)
+    source_tunnel_ip = Column(String(64), nullable=True)   # ej. 10.99.99.1
+    target_tunnel_ip = Column(String(64), nullable=True)   # ej. 10.99.99.2
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SnapshotRecord(Base):
+    """Auditoría de snapshots creados desde la aplicación."""
+    __tablename__ = "snapshot_records"
+    id = Column(Integer, primary_key=True)
+    node_id = Column(Integer, nullable=False)
+    vmid = Column(Integer, nullable=False)
+    name = Column(String(64), nullable=False)
+    description = Column(String(255), nullable=True)
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# --- Checks agentless (monitoreo server-side) ---
+
+class MonitoringCheck(Base):
+    """Check de monitoreo ejecutado por el servidor (sin agente): HTTP/TCP/ICMP."""
+    __tablename__ = "monitoring_checks"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    check_type = Column(String(10), nullable=False)   # 'http' | 'tcp' | 'icmp'
+    target = Column(String(500), nullable=False)       # URL, host o host:port
+    port = Column(Integer, nullable=True)              # para tcp
+    interval_seconds = Column(Integer, default=60)
+    timeout_seconds = Column(Integer, default=10)
+    expected_status = Column(Integer, nullable=True)   # para http (ej. 200)
+    enabled = Column(Boolean, default=True)
+    # Estado más reciente (denormalizado para listados rápidos)
+    last_status = Column(String(20), nullable=True)    # 'up' | 'down' | 'unknown'
+    last_latency_ms = Column(Float, nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    last_message = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MonitoringCheckResult(Base):
+    """Historial de resultados de un check agentless."""
+    __tablename__ = "monitoring_check_results"
+    id = Column(Integer, primary_key=True)
+    check_id = Column(Integer, ForeignKey("monitoring_checks.id"), index=True, nullable=False)
+    status = Column(String(20), nullable=False)
+    latency_ms = Column(Float, nullable=True)
+    message = Column(String(500), nullable=True)
+    ts = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# --- Canales de notificación globales (Slack/Telegram/Discord/Webhook) ---
+
+class NotificationChannel(Base):
+    """Canal de notificación que recibe las alertas además del correo."""
+    __tablename__ = "notification_channels"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    channel_type = Column(String(20), nullable=False)   # 'slack' | 'telegram' | 'discord' | 'webhook'
+    # Webhook URL (slack/discord/webhook) o token de bot (telegram), cifrado.
+    target_encrypted = Column(Text, nullable=False)
+    # Para Telegram: chat_id destino.
+    extra = Column(String(255), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+

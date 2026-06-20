@@ -13,7 +13,7 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - **Métricas en Tiempo Real**: CPU, RAM, Disco, Red y estado de servicios (Docker, Redis, etc.).
 - **Agente Ligero**: Agente en Python optimizado con instalación interactiva fácil.
 - **Alertas Inteligentes**: Notificaciones SMTP configurables.
-- **Seguridad**: Autenticación JWT y gestión de roles.
+- **Seguridad**: Autenticación basada en tokens de sesión (persistidos en BD, con expiración configurable) y gestión de roles.
 - **Fácil Despliegue**: Soporte completo para Docker y scripts de instalación automatizados.
 
 ## 🧩 Personalización por Usuario (Nuevo)
@@ -75,6 +75,36 @@ Sistema de monitoreo de servidores profesional, moderno y fácil de desplegar. D
 - Tráfico por interfaz de red.
 - Paquetes perdidos y métricas vía SNMP para switches y routers.
 
+## 📡 Monitoreo agentless y Notificaciones (Nuevo)
+
+Panel `/admin/monitoring` (admin):
+
+- **Checks agentless**: monitoriza endpoints **HTTP/TCP/ICMP** desde el propio
+  servidor, sin instalar agente en el destino. Configurables desde la UI, con
+  ejecución programada, estado/latencia e historial.
+- **Canales de notificación**: Slack, Discord, Telegram y webhook genérico que
+  reciben las alertas además del correo (secretos cifrados; botón de prueba).
+- **Retención de datos**: purga automática (diaria) y manual de históricos.
+  Variables: `METRICS_RETENTION_DAYS` (def. 30) y `CHECK_RESULTS_RETENTION_DAYS`.
+
+## 🖥️ Gestión Proxmox (Nuevo)
+
+Operación de infraestructura Proxmox VE desde el panel `/admin/proxmox`, **sin
+usar la API HTTP**: el backend ejecuta los CLI nativos (`qm`, `pct`, `vzdump`,
+`wg`) por SSH. Ver la [documentación completa](docs/proxmox.md).
+
+- **Recursos hardware**: modifica cores/memoria/disco de VMs (qemu) y contenedores (LXC).
+- **Snapshots**: crea, lista, restaura (rollback) y elimina instantáneas de cualquier guest.
+- **Backups programados**: `vzdump` con cron (APScheduler) y **autodetección de
+  servidores de base de datos** a partir de los servicios monitoreados.
+- **Migración segura**: vincula nodos mediante un **túnel WireGuard** cifrado y
+  migra cargas de trabajo (vzdump → transferencia por el túnel → restore),
+  garantizando confidencialidad e integridad de los datos.
+
+> Seguridad: solo admin, credenciales y claves privadas cifradas (Fernet),
+> validación estricta anti-inyección, verificación de host key SSH (TOFU) y
+> auditoría de todas las operaciones.
+
 ## 🔐 Seguridad y Control de Acceso
 
 - Roles definidos: Admin, Operador y Usuario.
@@ -108,15 +138,14 @@ Si ya tienes el proyecto descargado y quieres actualizarlo:
 # 1. Obtener los últimos cambios
 git pull origin main
 
-# 2. Actualizar dependencias del Backend
-cd src/server
-pip install -r requirements.txt
+# 2. Actualizar dependencias del Backend (desde la raíz del repositorio)
+pip install -r src/server/requirements.txt
 
 # 3. Aplicar migraciones de base de datos (si las hay)
-python scripts/migrate_db.py  # o el script correspondiente
+PYTHONPATH=. python src/server/scripts/migrate_db.py  # o el script correspondiente
 
 # 4. Actualizar dependencias del Frontend
-cd ../client
+cd src/client
 npm install
 npm run build
 ```
@@ -139,17 +168,33 @@ La forma más sencilla de iniciar el servidor (Backend + Frontend).
 ## 🔧 Instalación Manual (Desarrollo)
 
 ### Backend
+> El backend importa `config.settings` desde la raíz del proyecto, por lo que
+> debe ejecutarse **desde la raíz del repositorio** (con `PYTHONPATH=.`), no desde `src/server`.
+
 ```bash
-cd src/server
+# Desde la raíz del repositorio
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
 # Linux/Mac
 source .venv/bin/activate
 
-pip install -r requirements.txt
-python app/main.py
+pip install -r src/server/requirements.txt
+
+# Iniciar el servidor (el módulo es una app FastAPI, se sirve con uvicorn)
+PYTHONPATH=. uvicorn src.server.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+> **Variables de entorno recomendadas en producción:**
+> - `ENV=production`
+> - `ENCRYPTION_KEY` (obligatoria en producción; genérala con
+>   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
+> - `ALLOWED_ORIGINS` (dominios concretos del frontend, separados por comas)
+> - `ALLOWED_HOSTS` (hosts permitidos, separados por comas)
+> - `SESSION_TTL_HOURS` (vida de las sesiones; por defecto 168 = 7 días)
+> - `ADMIN_EMAIL` / `ADMIN_PASSWORD` (para el admin inicial; se forzará el cambio de contraseña en el primer login)
+> - `WG_TUNNEL_PREFIX` / `WG_LISTEN_PORT` (túnel WireGuard de migración Proxmox; ver [docs/proxmox.md](docs/proxmox.md))
+> - `METRICS_RETENTION_DAYS` / `CHECK_RESULTS_RETENTION_DAYS` (retención de históricos; por defecto 30 días)
 
 ### Frontend
 ```bash

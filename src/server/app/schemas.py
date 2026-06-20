@@ -361,13 +361,277 @@ class SMTPConfigSchema(BaseModel):
     port: int
     username: str
     password: Optional[str] = None
+    use_ssl: bool = False
+    use_tls: bool = True
+    sender_email: str
+
+class SMTPConfigResponse(BaseModel):
+    # No incluye 'password': la credencial nunca se devuelve al cliente.
+    id: int
+    host: str
+    port: int
+    username: str
     use_ssl: bool
     use_tls: bool
     sender_email: str
-
-class SMTPConfigResponse(SMTPConfigSchema):
-    id: int
     updated_at: Optional[datetime]
-    
+
+    class Config:
+        from_attributes = True
+
+
+# --- Gestión Proxmox ---
+
+class ProxmoxNodeCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    hostname: str
+    ssh_port: int = Field(22, ge=1, le=65535)
+    ssh_user: str = Field("root", pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    auth_type: str = Field("password", pattern="^(password|key)$")
+    secret: str = Field(..., min_length=1)   # contraseña o clave privada (texto plano de entrada)
+    use_sudo: bool = False
+
+class ProxmoxNodeResponse(BaseModel):
+    id: int
+    name: str
+    hostname: str
+    ssh_port: int
+    ssh_user: str
+    auth_type: str
+    use_sudo: bool
+    host_key_fingerprint: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class ProxmoxGuestResponse(BaseModel):
+    id: int
+    node_id: int
+    vmid: int
+    guest_type: str
+    name: Optional[str]
+    status: Optional[str]
+    is_db: bool
+    linked_server_id: Optional[str]
+    last_synced: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class GuestLinkUpdate(BaseModel):
+    linked_server_id: Optional[str] = None
+
+class GuestResourceUpdate(BaseModel):
+    cores: Optional[int] = Field(None, ge=1, le=512)
+    memory: Optional[int] = Field(None, ge=16, le=4194304)  # MB
+    disk: Optional[str] = None          # ej. 'scsi0'
+    disk_size: Optional[str] = None     # ej. '+5G'
+
+class SnapshotCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    description: Optional[str] = None
+
+class SnapshotResponse(BaseModel):
+    name: str
+    raw: Optional[str] = None
+
+class BackupScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    node_id: Optional[int] = None
+    cron_expr: str = Field(..., min_length=1, max_length=100)
+    storage: str
+    mode: str = Field("snapshot", pattern="^(snapshot|suspend|stop)$")
+    keep_last: int = Field(3, ge=1, le=100)
+    only_db: bool = True
+    enabled: bool = True
+
+class BackupScheduleUpdate(BaseModel):
+    name: Optional[str] = None
+    cron_expr: Optional[str] = None
+    storage: Optional[str] = None
+    mode: Optional[str] = Field(None, pattern="^(snapshot|suspend|stop)$")
+    keep_last: Optional[int] = Field(None, ge=1, le=100)
+    only_db: Optional[bool] = None
+    enabled: Optional[bool] = None
+
+class BackupScheduleResponse(BaseModel):
+    id: int
+    name: str
+    node_id: Optional[int]
+    cron_expr: str
+    storage: str
+    mode: str
+    keep_last: int
+    only_db: bool
+    enabled: bool
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class BackupRunRequest(BaseModel):
+    node_id: int
+    vmid: int
+    storage: str
+    mode: str = Field("snapshot", pattern="^(snapshot|suspend|stop)$")
+
+class BackupJobResponse(BaseModel):
+    id: int
+    schedule_id: Optional[int]
+    node_id: Optional[int]
+    vmid: Optional[int]
+    storage: Optional[str]
+    status: str
+    output_log: Optional[str]
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class NodeLinkCreate(BaseModel):
+    source_node_id: int
+    target_node_id: int
+    wg_interface: str = Field("wg-mig0", max_length=32)
+    listen_port: int = Field(51830, ge=1, le=65535)
+
+class NodeLinkResponse(BaseModel):
+    id: int
+    source_node_id: int
+    target_node_id: int
+    status: str
+    wg_interface: str
+    listen_port: int
+    source_tunnel_ip: Optional[str]
+    target_tunnel_ip: Optional[str]
+    source_wg_pubkey: Optional[str]
+    target_wg_pubkey: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class MigrateRequest(BaseModel):
+    link_id: int
+    vmid: int
+    guest_type: str = Field(..., pattern="^(qemu|lxc)$")
+    storage: str
+    online: bool = False
+
+class GuestPowerRequest(BaseModel):
+    action: str = Field(..., pattern="^(start|stop|shutdown|reboot|suspend|resume)$")
+
+
+# --- Checks agentless ---
+
+class MonitoringCheckCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    check_type: str = Field(..., pattern="^(http|tcp|icmp)$")
+    target: str = Field(..., min_length=1, max_length=500)
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    interval_seconds: int = Field(60, ge=10, le=86400)
+    timeout_seconds: int = Field(10, ge=1, le=120)
+    expected_status: Optional[int] = Field(None, ge=100, le=599)
+    enabled: bool = True
+
+class MonitoringCheckUpdate(BaseModel):
+    name: Optional[str] = None
+    target: Optional[str] = None
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    interval_seconds: Optional[int] = Field(None, ge=10, le=86400)
+    timeout_seconds: Optional[int] = Field(None, ge=1, le=120)
+    expected_status: Optional[int] = Field(None, ge=100, le=599)
+    enabled: Optional[bool] = None
+
+class MonitoringCheckResponse(BaseModel):
+    id: int
+    name: str
+    check_type: str
+    target: str
+    port: Optional[int]
+    interval_seconds: int
+    timeout_seconds: int
+    expected_status: Optional[int]
+    enabled: bool
+    last_status: Optional[str]
+    last_latency_ms: Optional[float]
+    last_checked_at: Optional[datetime]
+    last_message: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class MonitoringCheckResultResponse(BaseModel):
+    id: int
+    check_id: int
+    status: str
+    latency_ms: Optional[float]
+    message: Optional[str]
+    ts: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Auto-descubrimiento de red ---
+
+class DiscoveryScanRequest(BaseModel):
+    cidr: str = Field(..., min_length=7, max_length=64)
+    ports: Optional[List[int]] = None
+    timeout: float = Field(0.5, ge=0.1, le=5.0)
+    use_icmp: bool = True
+    auto_create: bool = False   # crear checks agentless para los hosts vivos
+
+class DiscoveredHost(BaseModel):
+    host: str
+    open_ports: List[int] = []
+    method: Optional[str] = None
+
+class DiscoveryScanResponse(BaseModel):
+    cidr: str
+    scanned: int
+    found: int
+    hosts: List[DiscoveredHost]
+    created_checks: int = 0
+
+
+# --- Inventario unificado (CMDB) ---
+
+class InventoryItem(BaseModel):
+    source: str            # 'agent' | 'agentless' | 'proxmox'
+    name: str
+    identifier: str        # server_id, target o vmid
+    kind: Optional[str] = None      # tipo de check / guest_type / 'server'
+    status: Optional[str] = None    # online/offline/up/down/running...
+    detail: Optional[str] = None
+    node: Optional[str] = None      # nodo Proxmox, si aplica
+
+
+# --- Canales de notificación ---
+
+class NotificationChannelCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    channel_type: str = Field(..., pattern="^(slack|telegram|discord|webhook)$")
+    target: str = Field(..., min_length=1)   # webhook URL o token de bot (texto plano de entrada)
+    extra: Optional[str] = None              # chat_id para telegram
+    enabled: bool = True
+
+class NotificationChannelUpdate(BaseModel):
+    name: Optional[str] = None
+    target: Optional[str] = None
+    extra: Optional[str] = None
+    enabled: Optional[bool] = None
+
+class NotificationChannelResponse(BaseModel):
+    # No incluye 'target': el secreto nunca se devuelve.
+    id: int
+    name: str
+    channel_type: str
+    extra: Optional[str]
+    enabled: bool
+    created_at: Optional[datetime]
+
     class Config:
         from_attributes = True

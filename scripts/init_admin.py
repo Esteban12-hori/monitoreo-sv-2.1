@@ -18,16 +18,19 @@ def init_admin():
     print("Connecting to DB...")
     db = SessionLocal()
     try:
-        email = "admin@example.com"
-        password = "Admin123!"
-        
+        email = os.getenv("ADMIN_EMAIL", "admin@example.com")
+        password = os.getenv("ADMIN_PASSWORD", "Admin123!")
+        if not os.getenv("ADMIN_PASSWORD"):
+            print("ADVERTENCIA: ADMIN_PASSWORD no configurada; usando contraseña por "
+                  "defecto. El admin deberá cambiarla en el primer inicio de sesión.")
+
         # Check if exists
         user = db.query(User).filter(User.email == email).first()
         if user:
             print(f"User {email} already exists. Updating password...")
             user.password_hash = get_password_hash(password)
             user.is_admin = True
-            user.must_change_password = False # Let's avoid forced change for now to test login
+            user.must_change_password = True  # Forzar cambio en el primer login
         else:
             print(f"Creating user {email}...")
             user = User(
@@ -35,7 +38,7 @@ def init_admin():
                 name="Admin User",
                 password_hash=get_password_hash(password),
                 is_admin=True,
-                must_change_password=False
+                must_change_password=True
             )
             db.add(user)
         

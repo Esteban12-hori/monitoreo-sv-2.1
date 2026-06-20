@@ -27,10 +27,23 @@ DEFAULT_ALERTS = {
     "disk_used_percent": 90.0,
 }
 
-ALLOWED_ORIGINS = ["*"]
+# Orígenes CORS permitidos. Configurable vía env (lista separada por comas).
+# Por defecto "*" para facilitar el desarrollo, pero en producción debe
+# restringirse a los dominios concretos del frontend.
+_origins = os.getenv("ALLOWED_ORIGINS", "*")
+ALLOWED_ORIGINS = [o.strip() for o in _origins.split(",") if o.strip()] or ["*"]
+
+# Hosts permitidos (cabecera Host). Configurable vía env para mitigar
+# ataques de Host header spoofing en producción.
+_hosts = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,::1,*")
+ALLOWED_HOSTS = [h.strip() for h in _hosts.split(",") if h.strip()] or ["*"]
 
 DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
 CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "500"))
+
+# Retención de datos históricos (días). 0 = sin purga.
+METRICS_RETENTION_DAYS = int(os.getenv("METRICS_RETENTION_DAYS", "30"))
+CHECK_RESULTS_RETENTION_DAYS = int(os.getenv("CHECK_RESULTS_RETENTION_DAYS", "30"))
 
 # Configuración de Email (SMTP)(Legacy Env Vars - now mostly in DB, but keeping for fallbacks/defaults if needed)
 # ... (User wants configuration in DB mostly, but encryption key here)

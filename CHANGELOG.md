@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-06-19
+
+### Added
+- **Inventario unificado (CMDB)**: nuevo endpoint `GET /api/inventory` y panel `/admin/inventory` que agregan en una sola vista los servidores con agente (online/offline según la última métrica), los checks agentless (up/down) y los guests Proxmox (VMs/contenedores). Es el punto donde convergen el lado "monitoreo" (Zabbix) y el lado "virtualización" (Proxmox).
+- **Auto-descubrimiento de red (estilo Zabbix)**: módulo `monitoring/discovery.py` y endpoint `POST /api/discovery/scan` (admin) que barren un rango CIDR detectando hosts vivos por TCP (puertos configurables) con *fallback* ICMP, de forma concurrente y acotada (máx. 1024 hosts). Opción `auto_create` para generar checks agentless de los hosts encontrados.
+- **Proxmox — ciclo de vida de guests**: `POST /api/proxmox/guests/{id}/power` (start/stop/shutdown/reboot/suspend/resume) y `GET .../status`, ejecutados por `qm`/`pct` vía SSH, con auditoría. Botones de encendido/apagado en el panel Proxmox.
+
+### Security
+- **Checks agentless**: validación estricta del `target` (`monitoring/validators.py`). Se rechaza el *argument injection* en ICMP (host con guion inicial, p. ej. `-f`/`-O`), se exige IP/hostname válido y URL http(s); el puerto TCP es obligatorio y se revalida al actualizar. Defensa en profundidad en el ejecutor `ping`.
+- **Canales de notificación**: el destino se valida antes de cifrarse — slack/discord/webhook exigen URL `https`; Telegram exige token `<id>:<secreto>`.
+
+### Tests
+- `tests/test_alternative.py`: 18 pruebas nuevas (inyección rechazada en checks y power, validación de canales, construcción de comandos `qm/pct`, descubrimiento con primitivas mockeadas e inventario agregando las tres fuentes). Suite total: 47 pruebas.
+
+## [2.2.0] - 2026-06-18
+
+### Added
+- **Monitoreo agentless (server-side)**: nuevo panel `/admin/monitoring` con checks **HTTP/TCP/ICMP** configurables desde la UI y ejecutados por el backend (sin agente en el destino), con ejecución programada (APScheduler), estado/latencia e historial de resultados.
+- **Canales de notificación reales**: Slack, Discord, Telegram y webhook genérico; reciben las alertas además del correo. Secretos cifrados (Fernet) y endpoint de prueba.
+- **Retención de datos**: purga programada (diaria) e on-demand de `metrics` y resultados de checks, configurable vía `METRICS_RETENTION_DAYS` / `CHECK_RESULTS_RETENTION_DAYS` (evita el crecimiento ilimitado de la base de datos).
+
+### Changed
+- **CI**: ahora ejecuta **toda** la suite de pruebas (no solo `test_backend`), construye el frontend y audita dependencias (`pip-audit`).
+
+### Security
+- **CI**: se elimina la `ENCRYPTION_KEY` hardcodeada; ahora se genera una clave efímera por ejecución.
+
+## [2.1.0] - 2026-06-18
+
+### Added
+- **Gestión Proxmox (sin API HTTP)**: nuevo panel de administración (`/admin/proxmox`) que opera nodos Proxmox VE ejecutando los CLI nativos (`qm`, `pct`, `vzdump`, `wg`) por **SSH**:
+  - Modificación de recursos hardware (cores/memoria/disco) de VMs (qemu) y contenedores (LXC).
+  - **Snapshots**: creación, listado, restauración (rollback) y borrado.
+  - **Backups programados** con APScheduler (cron) y **autodetección de servidores de base de datos** a partir de los servicios monitoreados; ejecución manual e historial.
+  - **Migración entre nodos** por un **túnel WireGuard** cifrado (ChaCha20-Poly1305): `vzdump` → transferencia por el túnel → restore, sin depender de la API de Proxmox.
+- **Endpoints** `/api/proxmox/*` (solo admin, con auditoría) y nuevos modelos (`ProxmoxNode`, `ProxmoxGuest`, `BackupSchedule`, `BackupJob`, `NodeLink`, `SnapshotRecord`).
+- **Pruebas funcionales** (`tests/test_proxmox.py`) con SSH/WireGuard mockeados, incluyendo casos de prevención de inyección de comandos.
+- Documentación: `docs/proxmox.md` y sección en el README.
+
+### Security
+- Credenciales SSH y claves privadas WireGuard cifradas en reposo (Fernet).
+- Validación estricta de entradas (anti command-injection) y verificación de host key SSH (TOFU).
+
+### Fixed
+- `SMTPConfigResponse` ya no expone el campo `password`; `use_ssl`/`use_tls` tienen valores por defecto.
+
 ## [2.0.0] - 2026-01-14
 
 ### Added
